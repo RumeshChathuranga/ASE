@@ -16,12 +16,14 @@ We're strictly isolating datastores for each microservice. This prevents noisy n
 
 ## Saga Pattern (Distributed Transactions)
 
-We can't use 2PC (Two-Phase Commit) across microservices, so we're going with a **Choreographed Saga** for the ride completion flow. 
+We can't use 2PC (Two-Phase Commit) across microservices, so we use a **Hybrid Saga Pattern**. 
+* **Phase 1 (Ride Booking):** Uses **Orchestration** (Trip Management synchronously commands Surge Pricing and Billing via APIs) because we must immediately reject riders if their card has no funds.
+* **Phase 2 (Ride Completion):** Uses **Choreography** (fully decentralized and event-driven via Kafka) because it must be highly available and decoupled during massive drop-off surges. 
 
 ### 1. Successful Transaction Flow
-* **Trip Management** marks ride as `COMPLETED` -> fires `RideCompleted` event.
-* **Surge Pricing** picks this up, calculates the final cost -> fires `FareCalculated`.
-* **Billing** picks up the fare, hits the payment gateway -> fires `PaymentSucceeded`.
+* **Trip Management** marks ride as `COMPLETED` -> fires `RideCompleted` event (including the actual route driven).
+* **Surge Pricing (Fare Service)** picks this up. Instead of calculating from scratch, it validates the actual route against the *upfront locked price* agreed upon at booking. It applies the locked fare (or recalculates if the destination changed) -> fires `FareCalculated`.
+* **Billing** picks up the final fare and hits the payment gateway to **capture** the previously authorized hold -> fires `PaymentSucceeded`.
 
 ### 2. Failure Scenario & Compensating Actions
 If the credit card declines *after* the ride is over, we obviously can't rollback the physical ride.
@@ -47,7 +49,7 @@ We have a dual-write problem: if a service updates its database and then publish
 
 We fix this with the **Outbox Pattern**:
 1. When Trip Management updates a ride, it also inserts the event payload into a local `outbox` table in the *same DB transaction*.
-2. A background process reads the outbox table and pushes the event to Kafka.
+2. We use a **Change Data Capture (CDC) tool like Debezium**. Instead of running generic background queries that cause database lock contention, Debezium reads the database's Write-Ahead Log (WAL) at the file level and pushes the event to Kafka.
 3. The process waits for an "ACK" (an acknowledgement from Kafka that the message was safely saved). If it doesn't get this ACK (e.g., if the network drops), it keeps trying to send it. This guarantees the message is delivered **at least once** and is never lost during a crash.
 
 ---
