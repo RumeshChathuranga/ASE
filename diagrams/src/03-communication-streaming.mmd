@@ -1,0 +1,51 @@
+%% UrbanRide - C4 Level 2 container view, focused on communication.
+%% Import this Mermaid source into draw.io and export as:
+%% diagrams/export/03-communication-streaming.svg
+%% Service-owned transactional databases are omitted (Member 2).
+%% Arrows show requests or event movement; ordinary responses are implicit.
+%% Solid = direct call or connection. Dashed = asynchronous Kafka event flow.
+%% Service and store boxes are containers, not deployment instances.
+
+flowchart TB
+    apps["Rider and driver apps<br/>[Client applications]<br/>Request rides and report GPS"]
+
+    subgraph urbanride["UrbanRide Backend - Software System"]
+        gateway["API Gateway<br/>[Container: HTTPS / WSS proxy]<br/>Authenticate and route traffic"]
+        identity["Identity &amp; Profile<br/>[Container: gRPC service]<br/>Accounts and access tokens"]
+        trip["Trip Management<br/>[Container: gRPC service]<br/>Own the ride lifecycle"]
+        ingestion["Driver Location Ingestion<br/>[Container: WebSocket service]<br/>Validate and publish GPS"]
+        matching["Matching Engine<br/>[Container: gRPC + Kafka consumer]<br/>Maintain locations and find candidates"]
+        surge["Surge Pricing<br/>[Container: gRPC + Kafka consumer]<br/>Calculate supply-demand pricing"]
+        billing["Billing &amp; Notifications<br/>[Container: Kafka consumer / producer]<br/>Charge rides and send updates"]
+        kafka[("Event Stream<br/>[Container: Apache Kafka]<br/>Location, trip, billing and DLQ topics")]
+        geo[("Location Index<br/>[Container: Redis; Matching-owned]<br/>Latest driver positions")]
+    end
+
+    payment["Payment provider<br/>[External software system]<br/>Process charges"]
+    push["Push notification provider<br/>[External software system]<br/>Deliver updates to mobile apps"]
+
+    apps -->|"HTTPS: commands / status; WSS: GPS"| gateway
+    gateway -->|"gRPC: login / profile"| identity
+    gateway -->|"gRPC: ride commands / status"| trip
+    gateway -->|"WSS proxy: GPS"| ingestion
+    trip -->|"gRPC: find candidates"| matching
+    trip -->|"gRPC: get price"| surge
+    matching -->|"Redis/TLS: update / query positions"| geo
+
+    ingestion -.->|"Publish: driver.location.v1"| kafka
+    trip -.->|"Outbox publish: trip.events.v1"| kafka
+    kafka -.->|"Consume: driver.location.v1"| matching
+    kafka -.->|"Consume: location + trip events"| surge
+    kafka -.->|"Consume: trip.events.v1"| billing
+    billing -.->|"Outbox publish: billing.events.v1"| kafka
+    kafka -.->|"Consume: billing.events.v1"| trip
+
+    billing -->|"HTTPS: idempotent charge"| payment
+    billing -->|"HTTPS: ride / payment updates"| push
+
+    classDef service fill:#e8f1fb,stroke:#315c88,color:#17324d,stroke-width:1px;
+    classDef store fill:#fff3d6,stroke:#9a772c,color:#4a3916,stroke-width:1px;
+    classDef external fill:#f1f3f5,stroke:#717b86,color:#29313a,stroke-width:1px;
+    class gateway,identity,trip,ingestion,matching,surge,billing service;
+    class kafka,geo store;
+    class apps,payment,push external;
