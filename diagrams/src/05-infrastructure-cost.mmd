@@ -1,0 +1,99 @@
+---
+title: UrbanRide — Deployment and Region Topology
+config:
+  layout: elk
+  elk:
+    mergeEdges: false
+    nodePlacementStrategy: BRANDES_KOEPF
+---
+flowchart TB
+
+    %% ---------- Global entry ----------
+    R53["Route 53 — latency-based routing<br/>riders and drivers pinned to their home cell"]
+
+    CELL2["Region cell — ap-south-1<br/>identical topology"]
+    CELL3["Region cell — us-east-1<br/>identical topology"]
+
+    %% ---------- Expanded cell ----------
+    subgraph CELL["Region cell — eu-west-1, spanning 3 Availability Zones"]
+
+        subgraph EDGE["Edge"]
+            ALB["ALB<br/>HTTPS / REST"]
+            NLB["NLB<br/>WSS — GPS pings"]
+        end
+
+        subgraph OD["EKS On-Demand baseline pool — c7g / m7g.2xlarge, Savings Plan covered"]
+            GW["API Gateway"]
+            ME["Matching Engine"]
+            ID["Identity &amp; Profile"]
+        end
+
+        subgraph SPOT["EKS Spot burst pool — capacity-optimized, 4+ instance types x 3 AZ"]
+            DLI["Driver Location<br/>Ingestion"]
+            TM["Trip Management"]
+            SP["Surge Pricing"]
+            BN["Billing &amp;<br/>Notifications"]
+        end
+
+        subgraph DATA["Managed data tier — multi-AZ"]
+            MSK["Amazon MSK<br/>6 x kafka.m7g.large"]
+            VAL["ElastiCache Valkey<br/>3 shards x 2 nodes"]
+            AUR["Aurora PostgreSQL<br/>writer + 2 readers"]
+            DDB["DynamoDB<br/>driver / trip state"]
+        end
+
+        subgraph SVLS["Serverless and object storage"]
+            LMB["Lambda<br/>receipts, reconciliation"]
+            S3C["S3<br/>Parquet + lifecycle tiering"]
+        end
+
+    end
+
+    %% ---------- Global data layer ----------
+    subgraph GLOBAL["Global data layer — asynchronous only, never on the matching path"]
+        DDBG["DynamoDB global tables<br/>Identity &amp; Profile reference data"]
+        LAKE["S3 analytics lake + Glacier archive<br/>cross-region replication"]
+    end
+
+    %% ---------- Synchronous ----------
+    R53 --> ALB
+    R53 --> NLB
+    R53 --> CELL2
+    R53 --> CELL3
+    ALB --> GW
+    NLB --> DLI
+    GW --> TM
+    GW --> ID
+    TM --> ME
+    TM --> SP
+    TM --> AUR
+    ME --> VAL
+    ME --> DDB
+
+    %% ---------- Asynchronous ----------
+    DLI -.-> MSK
+    TM -.-> MSK
+    MSK -.-> ME
+    MSK -.-> SP
+    MSK -.-> BN
+    MSK -.-> S3C
+    BN -.-> LMB
+    ID -.-> DDBG
+    S3C -.-> LAKE
+    CELL2 -.-> LAKE
+    CELL3 -.-> LAKE
+
+    %% ---------- Styling ----------
+    classDef global fill:#EDE7F6,stroke:#5E35B1,color:#1A1A1A
+    classDef ondemand fill:#E3F2FD,stroke:#1565C0,color:#1A1A1A
+    classDef spot fill:#FFF3E0,stroke:#EF6C00,color:#1A1A1A
+    classDef managed fill:#E8F5E9,stroke:#2E7D32,color:#1A1A1A
+    classDef edgeclass fill:#F5F5F5,stroke:#616161,color:#1A1A1A
+    classDef peer fill:#FAFAFA,stroke:#9E9E9E,color:#1A1A1A,stroke-dasharray:4 3
+
+    class R53,DDBG,LAKE global
+    class GW,ME,ID ondemand
+    class DLI,TM,SP,BN spot
+    class MSK,VAL,AUR,DDB,LMB,S3C managed
+    class ALB,NLB edgeclass
+    class CELL2,CELL3 peer
