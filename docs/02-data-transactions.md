@@ -16,14 +16,17 @@ We're strictly isolating datastores for each microservice. This prevents noisy n
 
 ## Saga Pattern (Distributed Transactions)
 
+![Saga Sequence Diagram](../diagrams/export/02-data-transactions.png)
+
 We can't use 2PC (Two-Phase Commit) across microservices, so we use a **Hybrid Saga Pattern**. 
 * **Phase 1 (Ride Booking):** Uses **Orchestration** (Trip Management synchronously commands Surge Pricing and Billing via APIs) because we must immediately reject riders if their card has no funds.
 * **Phase 2 (Ride Completion):** Uses **Choreography** (fully decentralized and event-driven via Kafka) because it must be highly available and decoupled during massive drop-off surges. 
 
 ### 1. Successful Transaction Flow
-* **Trip Management** marks ride as `COMPLETED` -> fires `RideCompleted` event (including the actual route driven).
-* **Surge Pricing (Fare Service)** picks this up. Instead of calculating from scratch, it validates the actual route against the *upfront locked price* agreed upon at booking. It applies the locked fare (or recalculates if the destination changed) -> fires `FareCalculated`.
-* **Billing** picks up the final fare and hits the payment gateway to **capture** the previously authorized hold -> fires `PaymentSucceeded`.
+* **Trip Management** marks ride as `COMPLETED` -> fires `RideCompleted` event.
+* **Parallel Event Consumption:**
+  * **Surge Pricing** consumes the event to update its internal supply/demand metrics (since the driver is now free).
+  * **Billing** consumes the event, relies on the *upfront locked price* agreed upon at booking, and hits the payment gateway to **capture** the previously authorized hold -> fires `PaymentSucceeded`.
 
 ### 2. Failure Scenario & Compensating Actions
 If the credit card declines *after* the ride is over, we obviously can't rollback the physical ride.

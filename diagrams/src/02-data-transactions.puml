@@ -39,18 +39,19 @@ Trip -> Trip: Insert to Outbox (Atomic)
 Trip -> Kafka: Publish RideCompletedEvent
 deactivate Trip
 
-Kafka -> Surge: Consume RideCompletedEvent
-activate Surge
-Surge -> Surge: Validate Actual Route vs\nUpfront Locked Price
-Surge -> Surge: Insert to Outbox
-Surge -> Kafka: Publish FareCalculatedEvent
-deactivate Surge
-
-Kafka -> Bill: Consume FareCalculatedEvent
-activate Bill
-Bill -> Bill: Check Idempotency-Key
-Bill -> PG: API: Capture Authorized Hold
-activate PG
+par
+    Kafka -> Surge: Consume RideCompletedEvent
+    activate Surge
+    note right of Surge: Update supply/demand\nmetrics (Driver now free)
+    deactivate Surge
+else
+    Kafka -> Bill: Consume RideCompletedEvent
+    activate Bill
+    Bill -> Bill: Check Idempotency-Key
+    note right of Bill: Use original\nlocked fare
+    Bill -> PG: API: Capture Authorized Hold
+    activate PG
+end
 
 alt Capture Successful (200 OK)
     PG --> Bill: Success Response
