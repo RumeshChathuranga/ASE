@@ -55,24 +55,12 @@ During a 5x surge the Matching Engine gets hit hardest, so it needs to fail safe
 
 ---
 
-## Diagram: C4 Component View — Matching Engine
+## Diagram: C4 Level 3 Component View — Matching Engine
 
-```mermaid
-flowchart TB
-    Gateway[API Gateway] -->|gRPC: request match| ME[Matching Engine]
-    ME -->|GEOSEARCH + status check| GeoCache[(Redis Geo + Driver Status)]
-    ME -->|lock driver: Lua script| GeoCache
-    ME -->|confirm fare: gRPC, circuit breaker| Surge[Surge Pricing]
-    ME -->|publish MatchFound event| Kafka[[Kafka]]
-    ME -->|match result| Gateway
-```
+<!-- Source: ../diagrams/src/04-geospatial-latency.mmd. Regenerate with: mmdc -i diagrams/src/04-geospatial-latency.mmd -o diagrams/export/04-geospatial-latency.png -b white -w 1600 -s 2 -->
+![UrbanRide Matching Engine C4 Level 3 component diagram](../diagrams/export/04-geospatial-latency.png)
 
-Source diagram lives in `diagrams/src/`, exported copy in `diagrams/export/`, once the team's diagram tool is agreed at kickoff.
+*Figure 4. Components inside the Matching Engine container. Solid arrows are synchronous calls on the matching path, numbered 1–5 in the order the Match Request Handler runs them, with the per-step budget from the latency table above. Dashed arrows are asynchronous Kafka flow and never block a match: the Location Consumer keeps the Redis Geo index fresh from `driver.location.v1`, and the Match Event Publisher emits `MatchFound` fire-and-forget. The Fare Confirmer is where the circuit breaker on Surge Pricing lives; the rate limiter sits in front, at the API Gateway.*
 
 ---
 
-## Q&A Prep
-
-1. **What happens if the geo-index cache is stale or gets invalidated at the wrong time?** Location + status share a short TTL, so a stuck driver drops out automatically rather than staying "available" forever; the atomic Redis lock stops two riders grabbing the same driver in the meantime.
-2. **How does matching hold up under a sudden 5x spike?** The 165ms happy-path leaves 335ms of margin, plus a rate limiter at the Gateway and a circuit breaker on the Surge Pricing call so one slow dependency can't take down matching.
-3. **Why Redis Geo over H3 or S2?** Driver locations already live in Redis from ingestion, and `GEOSEARCH` is sub-millisecond — H3/S2 would add a second index to keep in sync for precision we don't need at this scale.
