@@ -84,7 +84,7 @@ UrbanRide is one system from the outside, with two human actors and three extern
 
 ### 1.2 Boundary principle
 
-Boundaries are drawn where **workload characteristics diverge or consistency requirements diverge** — not by technical layering and not "one microservice per noun in the brief". A capability gets its own service when it must scale independently, fail independently, or hold a different CAP stance than its neighbours. Otherwise it stays merged (§1.4).
+Boundaries are drawn where **workload characteristics diverge or consistency requirements diverge** — not by technical layering and not "one microservice per noun in the brief". A capability gets its own service when it must scale independently, fail independently, or hold a different CAP stance than its neighbours. Otherwise it stays merged (Section 1.4).
 
 The dominant driver is the **625× gap** between location ingestion (~37,500 events/s) and ride requests (~60/s at peak).
 
@@ -92,7 +92,7 @@ The dominant driver is the **625× gap** between location ingestion (~37,500 eve
 
 No service reads or writes another service's datastore; cross-service access happens only by API call or event.
 
-| # | Service | Bounded context / responsibility | Owns (datastore, see §2.1) | Why it is separate |
+| # | Service | Bounded context / responsibility | Owns (datastore, see Section 2.1) | Why it is separate |
 |---|---|---|---|---|
 | 1 | API Gateway | Request routing, auth-token validation, edge rate limiting | Rate-limit counters and routing config (Redis); no business data | Only internet-facing component; different scaling and security posture from every internal service |
 | 2 | Identity & Profile | User/driver identity, credentials, KYC/verification state | User and driver profiles, credentials, KYC state (DynamoDB global tables) | Auth data has a lifecycle and consistency need distinct from operational trip data |
@@ -112,29 +112,29 @@ Examples of the ownership rule: the Matching Engine *reads* the location stream 
 | Standalone Fare Calculation service | A pure function of trip data and surge multiplier, with no independent scaling profile; would add a fourth network call to the booking Saga |
 | Per-lifecycle-stage trip services | Stages of one state machine need a single authoritative owner |
 | Merge Surge Pricing into Matching Engine | Different data shape (aggregated, slow-updating) and different scaling driver (zone count, not request rate) |
-| Per-city / per-region service instances | Regional variation is a deployment and data-partitioning concern (§5.1), not a domain boundary |
+| Per-city / per-region service instances | Regional variation is a deployment and data-partitioning concern (Section 5.1), not a domain boundary |
 | Separate API Gateway per client type | Duplicates auth and rate-limiting logic without reducing coupling |
 
 ### 1.5 Why not a monolith?
 
-A monolith combining ride transactions, GPS ingestion, matching, pricing, billing and notifications would let the ~37,500 pings/s location workload force the entire application to scale together — directly threatening the 10 LKR/ride ceiling — and would let a slowdown in one capability cascade into unrelated ones (a matching spike delaying completed-trip billing). The seven-service decomposition gives independent scaling, fault isolation, clear data ownership and independent evolution, without fragmenting further than §1.2 justifies.
+A monolith combining ride transactions, GPS ingestion, matching, pricing, billing and notifications would let the ~37,500 pings/s location workload force the entire application to scale together — directly threatening the 10 LKR/ride ceiling — and would let a slowdown in one capability cascade into unrelated ones (a matching spike delaying completed-trip billing). The seven-service decomposition gives independent scaling, fault isolation, clear data ownership and independent evolution, without fragmenting further than Section 1.2 justifies.
 
 ### 1.6 CAP stance per service
 
 | Service | Stance | Why |
 |---|---|---|
 | Driver Location Ingestion | **AP** | A consensus write per ping at 37,500/s would blow the latency budget; staleness of a few seconds is corrected by the next ping |
-| Matching Engine | **AP** (index) with an atomic reservation | Candidate search tolerates seconds-old positions. Double-booking is prevented by an atomic Redis Lua reservation (§4.5), but the authoritative "this driver is on this trip" record is Trip Management's, not Redis's |
+| Matching Engine | **AP** (index) with an atomic reservation | Candidate search tolerates seconds-old positions. Double-booking is prevented by an atomic Redis Lua reservation (Section 4.5), but the authoritative "this driver is on this trip" record is Trip Management's, not Redis's |
 | Surge Pricing | **AP** | A cached, periodically refreshed multiplier; staleness is cheaper than blocking the request path |
 | Trip Management | **CP** | The trip state machine must not fork; reduced availability beats corrupted trip state |
 | Billing & Notifications | **CP** (billing) / AP (notifications) | Money cannot be eventually consistent; a delayed push notification has no financial consequence |
-| Identity & Profile | **CP** within its home cell | A revoked driver must not keep matching; strongly consistent reads in the home region. Cross-region replication of reference data is eventually consistent (§5.1) and never on the matching path |
+| Identity & Profile | **CP** within its home cell | A revoked driver must not keep matching; strongly consistent reads in the home region. Cross-region replication of reference data is eventually consistent (Section 5.1) and never on the matching path |
 
 The two stances the panel will probe hardest are Driver Location Ingestion → AP and Billing → CP.
 
 ### 1.7 Cost traceability
 
-1,000,000 rides/day × 10 LKR = 10,000,000 LKR/day, matching the brief. The decomposition supports this by letting each service scale to its own workload (§5.2) instead of provisioning everything for the highest-volume component.
+1,000,000 rides/day × 10 LKR = 10,000,000 LKR/day, matching the brief. The decomposition supports this by letting each service scale to its own workload (Section 5.2) instead of provisioning everything for the highest-volume component.
 
 ---
 
@@ -148,13 +148,13 @@ Datastores are strictly isolated per service. This prevents noisy neighbours (he
 |---|---|---|---|
 | **API Gateway** | Redis (rate-limit counters) | Ephemeral counters only; no business data | — |
 | **Identity & Profile** | DynamoDB global tables | Read-mostly key lookups; strongly consistent reads in the home cell; reference data replicated to other cells eventually | CP (home cell) |
-| **Trip Management** | Aurora PostgreSQL, provisioned (1 writer + 2 readers) [R25] | Strong ACID guarantees for the trip state machine and outbox. Aurora Serverless v2 was considered, but at a steady 12–60 transactions/s the writer is far below capacity; a provisioned cluster under a Savings Plan is cheaper, and the 5× surge is absorbed by the Trip Management pods and the readers (§5.2, §5.5) | CP |
-| **Driver Location Ingestion** | Kafka `driver.location.v1` (buffer, 1 h) + S3 (archive) | Writing 37,500 pings/s straight into a database is too expensive. Phones stream to Kafka; consumers read from there. Raw history is batched into Parquet and archived to S3 (§5.4) | AP |
-| **Matching Engine** | Redis geo-index + status/lock keys (Matching-owned, §4.1) | Ephemeral, in-memory, rebuilt from the live stream in ~4 s; nothing needs backup | AP |
+| **Trip Management** | Aurora PostgreSQL, provisioned (1 writer + 2 readers) [R25] | Strong ACID guarantees for the trip state machine and outbox. Aurora Serverless v2 was considered, but at a steady 12–60 transactions/s the writer is far below capacity; a provisioned cluster under a Savings Plan is cheaper, and the 5× surge is absorbed by the Trip Management pods and the readers (Sections 5.2 and 5.5) | CP |
+| **Driver Location Ingestion** | Kafka `driver.location.v1` (buffer, 1 h) + S3 (archive) | Writing 37,500 pings/s straight into a database is too expensive. Phones stream to Kafka; consumers read from there. Raw history is batched into Parquet and archived to S3 (Section 5.4) | AP |
+| **Matching Engine** | Redis geo-index + status/lock keys (Matching-owned, Section 4.1) | Ephemeral, in-memory, rebuilt from the live stream in ~4 s; nothing needs backup | AP |
 | **Surge Pricing** | DynamoDB (on-demand) | Fast reads/writes of zone multipliers; pay per request during bursts | AP |
 | **Billing & Notifications** | Aurora PostgreSQL — separate logical database on the same cell cluster, own schema and credentials | Financial data must be strongly consistent (no double charges). Outbox pattern decouples the payment transaction from slower SMS/push delivery | CP |
 
-Trip Management and Billing share one Aurora cluster per cell for cost (§5.5) but are separate databases with no cross-database access; database-per-service is enforced at the logical level.
+Trip Management and Billing share one Aurora cluster per cell for cost (Section 5.5) but are separate databases with no cross-database access; database-per-service is enforced at the logical level.
 
 ### 2.2 Distributed transactions: a hybrid Saga
 
@@ -164,7 +164,7 @@ Trip Management and Billing share one Aurora cluster per cell for cost (§5.5) b
 
 Two-phase commit across services is not an option, so a **hybrid Saga** is used:
 
-- **Phase 1 — Ride booking: orchestration.** Trip Management synchronously calls Surge Pricing (*calculate upfront price → locked fare*) and Billing (*authorise hold on the locked fare → payment gateway*). A rider whose card cannot hold the fare is rejected immediately. Only after the hold succeeds does Trip Management record `SEARCHING_DRIVER` and call the Matching Engine (§4). If the Matching Engine finds no driver within the retry window, the compensating action is to **void the hold** and set the trip to `CANCELLED`.
+- **Phase 1 — Ride booking: orchestration.** Trip Management synchronously calls Surge Pricing (*calculate upfront price → locked fare*) and Billing (*authorise hold on the locked fare → payment gateway*). A rider whose card cannot hold the fare is rejected immediately. Only after the hold succeeds does Trip Management record `SEARCHING_DRIVER` and call the Matching Engine (Section 4). If the Matching Engine finds no driver within the retry window, the compensating action is to **void the hold** and set the trip to `CANCELLED`.
 - **Phase 2 — Ride completion: choreography.** Fully event-driven via Kafka, because completion must stay highly available and decoupled during drop-off surges.
 
 **Successful completion**
@@ -193,13 +193,13 @@ A service that updates its database and then publishes to Kafka can crash in bet
 
 1. When Trip Management (or Billing) changes state, it inserts the event payload into a local `outbox` table **in the same database transaction**.
 2. A change-data-capture connector (**Debezium**) tails the database write-ahead log — no polling queries, no lock contention — and publishes each outbox row to Kafka.
-3. The connector advances only after Kafka acknowledges the write (`acks=all`, §3.3); on failure it retries. Delivery is therefore **at-least-once** and never lost, and consumers deduplicate with `eventId` (§2.3).
+3. The connector advances only after Kafka acknowledges the write (`acks=all`, Section 3.3); on failure it retries. Delivery is therefore **at-least-once** and never lost, and consumers deduplicate with `eventId` (Section 2.3).
 
 ### 2.5 Lock contention on driver assignment (double booking)
 
 During a 5× surge, several riders in one area can be matched against the same driver at the same instant. Pessimistic database locks would destroy the 500 ms budget, so the reservation is an **optimistic, atomic check-and-set in Redis**:
 
-- The Matching Engine runs a short Lua script that checks `status == AVAILABLE` and flips it to `ASSIGNED:<tripId>` in one atomic step (§4.5).
+- The Matching Engine runs a short Lua script that checks `status == AVAILABLE` and flips it to `ASSIGNED:<tripId>` in one atomic step (Section 4.5).
 - If the script returns `0` — another request won a millisecond earlier — the engine moves to the next ranked candidate. No waiting, no deadlocks.
 - The Redis reservation is short-lived (15 s TTL). The durable assignment is written by Trip Management to Aurora (`MATCHED`) and published as `DriverAssigned` through the outbox; Redis never holds the record of truth.
 
@@ -211,7 +211,7 @@ UrbanRide separates immediate ride requests from continuous GPS traffic and back
 
 ![Figure 3 — Container diagram (C4 Level 2)](diagrams/export/03-communication-streaming.png)
 
-*Figure 3. Communication-focused container view. Solid arrows are direct calls; dashed arrows are Kafka event flow. Service-owned databases are omitted (see §2.1); the synchronous Trip Management → Billing call for the authorisation hold is shown in Figure 2.*
+*Figure 3. Communication-focused container view. Solid arrows are direct calls; dashed arrows are Kafka event flow. Service-owned databases are omitted (see Section 2.1); the synchronous Trip Management → Billing call for the authorisation hold is shown in Figure 2.*
 
 ### 3.1 Protocol choices
 
@@ -220,7 +220,7 @@ UrbanRide separates immediate ride requests from continuous GPS traffic and back
 | Rider / driver apps → API Gateway | HTTPS/REST | Simple commands and status queries; ride creation carries an idempotency key for safe retries |
 | Driver app → Driver Location Ingestion (through the Gateway's WSS proxy) | Secure WebSocket (WSS) | One persistent connection per driver carries a ping every 4 s with negligible connection overhead |
 | API Gateway → Trip Management, Identity & Profile | gRPC over TLS | Typed, compact requests with reused connections and propagated deadlines |
-| Trip Management → Surge Pricing (quote), Billing & Notifications (hold), Matching Engine (find driver) | gRPC over TLS | Synchronous steps of the booking orchestration (§2.2) |
+| Trip Management → Surge Pricing (quote), Billing & Notifications (hold), Matching Engine (find driver) | gRPC over TLS | Synchronous steps of the booking orchestration (Section 2.2) |
 | Trip Management → Maps / Routing Provider | HTTPS/REST | ETA and route at quote time; cached per origin–destination cell |
 | Services ↔ Kafka | Kafka protocol over TLS | Independent consumers, buffering and replay decouple GPS, pricing and billing |
 | Billing & Notifications → payment / SMS / push providers | HTTPS/REST | Provider integration runs outside the request path |
@@ -238,7 +238,7 @@ The Gateway validates access tokens locally with cached signing keys, so GPS pin
 
 `driver.location.v1` starts with **48 partitions**, ≈781 events/s per partition at the assumed load — an initial sizing choice, not a measured guarantee. Hashing `driverId` spreads a stadium's drivers across partitions while preserving each driver's order. Each consumer group receives the full stream; replicas within a group share partitions, so up to 48 consumers can be active. GPS retention is one hour because fresh positions matter more than history.
 
-The Matching Engine's consumer (`matching-location`) updates its Redis location index (§4.2). Surge Pricing independently combines `driver.location.v1` (supply) with `trip.events.v1` (demand) to compute zone multipliers, so a pricing slowdown never touches the matching consumer.
+The Matching Engine's consumer (`matching-location`) updates its Redis location index (Section 4.2). Surge Pricing independently combines `driver.location.v1` (supply) with `trip.events.v1` (demand) to compute zone multipliers, so a pricing slowdown never touches the matching consumer.
 
 `match.events.v1` is an **informational** stream: it lets Surge Pricing see supply drop the moment a driver is reserved. It is published fire-and-forget by the stateless Matching Engine and is *not* the authoritative assignment — that is `DriverAssigned`, written by Trip Management through its outbox after the match reply.
 
@@ -246,19 +246,19 @@ GPS events carry capture time and a per-driver monotonic sequence, so a replay c
 
 ### 3.3 Delivery guarantees
 
-Replication factor **3**, `min.insync.replicas = 2`, `acks=all`, idempotent producers [R2]. Consumers commit offsets only after successful processing, giving **at-least-once** processing; consumers deduplicate on `eventId` inside the same transaction as their business change (§2.3), and payment retries reuse the provider idempotency key. This prevents duplicate effects without claiming end-to-end exactly-once delivery [R3]. Trip and billing events originate only from the transactional outbox (§2.4); GPS consumers may discard superseded or expired positions. Owning databases retain authoritative records beyond Kafka's retention window.
+Replication factor **3**, `min.insync.replicas = 2`, `acks=all`, idempotent producers [R2]. Consumers commit offsets only after successful processing, giving **at-least-once** processing; consumers deduplicate on `eventId` inside the same transaction as their business change (Section 2.3), and payment retries reuse the provider idempotency key. This prevents duplicate effects without claiming end-to-end exactly-once delivery [R3]. Trip and billing events originate only from the transactional outbox (Section 2.4); GPS consumers may discard superseded or expired positions. Owning databases retain authoritative records beyond Kafka's retention window.
 
 ### 3.4 Backpressure and failure handling
 
 - **Protect request capacity.** Stream workers are isolated from request handlers. GPS connections get separate Gateway capacity and bounded ingestion buffers. Ingestion rate-limits per driver; under overload it keeps only the newest unsent position and asks the app to report more slowly. On reconnect a driver sends its current position, not a backlog.
-- **Keep matching fresh.** Consumer lag is monitored in seconds and consumers scale within the partition limit (§5.3). A lag above **2 s** alerts; the Location Consumer **discards any ping older than 12 s** (three missed intervals) during replay so stale positions are never written as current, and index entries expire on their own at **15 s** (§4.1). A Kafka outage therefore shrinks the candidate set rather than exposing stale positions; unpublishable business events wait safely in the outbox.
+- **Keep matching fresh.** Consumer lag is monitored in seconds and consumers scale within the partition limit (Section 5.3). A lag above **2 s** alerts; the Location Consumer **discards any ping older than 12 s** (three missed intervals) during replay so stale positions are never written as current, and index entries expire on their own at **15 s** (Section 4.1). A Kafka outage therefore shrinks the candidate set rather than exposing stale positions; unpublishable business events wait safely in the outbox.
 - **Recover without retry storms.** Affected partitions are paused during dependency outages; retries use bounded exponential backoff with jitter. Malformed or repeatedly failing records are quarantined in consumer-specific `<topic>.<group>.dlq` topics (7-day retention) with an alert to the owner; the source offset is committed only after durable quarantine. Replay after correction reuses the original `eventId`, and dependent business transitions are held until the failed event is resolved.
 
 ---
 
 ## 4. Geospatial Matching and Latency
 
-This is the part of UrbanRide that must be fastest: finding a nearby free driver for a rider. The fare is already locked and the card already authorised when the Matching Engine is called (§2.2), so matching has exactly two dependencies — Redis and Kafka — and no dependency on Surge Pricing or Billing.
+This is the part of UrbanRide that must be fastest: finding a nearby free driver for a rider. The fare is already locked and the card already authorised when the Matching Engine is called (Section 2.2), so matching has exactly two dependencies — Redis and Kafka — and no dependency on Surge Pricing or Billing.
 
 ### 4.1 Geo-index choice: Redis Geo vs H3 vs S2
 
@@ -282,13 +282,13 @@ The Matching Engine must serve ~60 lookups/s at peak against 150,000 drivers pin
 The index is write-heavy (37,500 writes/s vs ~60 reads/s), so writes must be cheap:
 
 - Pings never hit the Matching Engine's request path. Driver Location Ingestion publishes to `driver.location.v1`; the Matching Engine's **Location Consumer** reads the topic and writes Redis. If Redis is briefly slow, pings queue in Kafka rather than being lost.
-- The consumer writes in **pipelined batches**: one `GEOADD` plus one `EXPIRE` per ping ≈ 75,000 simple commands/s. A single Redis node handles well over 100,000/s, and the index is split across **3 shards by city** (§5.5), leaving headroom for the 5× surge.
+- The consumer writes in **pipelined batches**: one `GEOADD` plus one `EXPIRE` per ping ≈ 75,000 simple commands/s. A single Redis node handles well over 100,000/s, and the index is split across **3 shards by city** (Section 5.5), leaving headroom for the 5× surge.
 - The data is small: 150,000 drivers × ~100 bytes ≈ **15 MB**.
 - Because every driver pings every 4 s, the index **rebuilds itself in ~4 s** from the stream; no persistence or restore is needed.
 
 ### 4.3 Latency budget (must stay under 500 ms)
 
-The budget covers the ride-request transaction from `SEARCHING_DRIVER` to the rider receiving the driver (§0.3).
+The budget covers the ride-request transaction from `SEARCHING_DRIVER` to the rider receiving the driver (Section 0.3).
 
 | Step | Where | Budget |
 |---|---|---|
@@ -297,7 +297,7 @@ The budget covers the ride-request transaction from `SEARCHING_DRIVER` to the ri
 | Trip Management → Matching Engine | gRPC | 10 ms |
 | Find nearby drivers | Redis `GEOSEARCH` | 15 ms |
 | Filter and rank candidates | Matching Engine logic | 25 ms |
-| Lock the chosen driver | Redis Lua script (§4.5) | 10 ms |
+| Lock the chosen driver | Redis Lua script (Section 4.5) | 10 ms |
 | Publish `MatchFound` | Kafka producer, async — does not block the reply | 5 ms |
 | Persist `MATCHED` + outbox row | Trip Management → Aurora write | 20 ms |
 | Response → rider app | Network | 30 ms |
@@ -305,14 +305,14 @@ The budget covers the ride-request transaction from `SEARCHING_DRIVER` to the ri
 | Safety margin (queueing, retries, surge slowdown) | | 345 ms |
 | **Total** | | **500 ms** |
 
-Keeping the happy path near 155 ms leaves more than twice that in margin for the 5× surge, when queues lengthen and downstream calls slow. Surge Pricing's 40 ms quote call and the payment hold sit *before* this budget (§2.2).
+Keeping the happy path near 155 ms leaves more than twice that in margin for the 5× surge, when queues lengthen and downstream calls slow. Surge Pricing's 40 ms quote call and the payment hold sit *before* this budget (Section 2.2).
 
 ### 4.4 Cache invalidation on driver state change
 
 - Every driver state change (`AVAILABLE`, `ASSIGNED`, `OFFLINE`) is written to Redis the moment it happens — there is no batch job and no stale window.
 - Location and status share the same 15 s TTL. If a phone stops pinging (crash, tunnel, dead battery) the entry expires on its own and the driver drops out of matching instead of staying "available" forever.
 - Pings only extend the TTL; they never overwrite the status value, so a ping cannot resurrect an `ASSIGNED` driver as `AVAILABLE`.
-- The atomic lock (§4.5) closes the gap between "found" and "assigned".
+- The atomic lock (Section 4.5) closes the gap between "found" and "assigned".
 
 ### 4.5 Atomic driver lock (no double booking)
 
@@ -329,7 +329,7 @@ return 0     -- someone else got there first
 
 - On `0` the Matching Engine simply tries the **next driver in its ranked list** — which is why filter-and-rank returns a short candidate list, not one driver.
 - The lock carries the trip id, so a later release only clears the lock if it still belongs to that trip.
-- The lock has the same 15 s TTL. If the Matching Engine crashes right after locking, the lock expires and the driver becomes available again. Trip Management confirms the assignment in Aurora (§2.5) and, while the trip is active, the status is refreshed as `ASSIGNED` by the driver's pings.
+- The lock has the same 15 s TTL. If the Matching Engine crashes right after locking, the lock expires and the driver becomes available again. Trip Management confirms the assignment in Aurora (Section 2.5) and, while the trip is active, the status is refreshed as `ASSIGNED` by the driver's pings.
 - **Driver decline:** assignment is automatic, but the driver app may decline within a short window. Trip Management then releases the lock and re-runs the match; this happens after the reply and is outside the 500 ms budget.
 
 ### 4.6 Protecting the matching path: rate limiters, circuit breakers, bulkheads
@@ -345,16 +345,16 @@ The location index is deliberately **AP**: a position a few seconds old is fine;
 
 - **One Redis node dies:** each shard has a replica; failover takes a few seconds. During that gap matching returns "no drivers found" for that city and riders retry. Nothing is lost — pings keep arriving through Kafka and refill the new primary within ~4 s.
 - **Split between the Matching Engine and Redis:** treated as Redis being down — fast failure, no hanging. The Location Consumer pauses and its offset does not move, so pings replay once the link is back.
-- **Split between regions:** irrelevant. A rider in Colombo is only matched with drivers in Colombo; the index is never shared across cells (§5.1).
+- **Split between regions:** irrelevant. A rider in Colombo is only matched with drivers in Colombo; the index is never shared across cells (Section 5.1).
 - **Stale driver after a split:** a driver who was `AVAILABLE` before the split but is now offline expires from the index within 15 s. The worst case is one failed lock attempt, which "try the next candidate" already handles.
 
-The only thing that must be **CP** is the final "this driver is on this trip" record, which lives in Trip Management's database and is protected by the Saga (§2.2) — never in Redis.
+The only thing that must be **CP** is the final "this driver is on this trip" record, which lives in Trip Management's database and is protected by the Saga (Section 2.2) — never in Redis.
 
 ### 4.8 Matching Engine components (C4 Level 3)
 
 ![Figure 4 — Matching Engine component view (C4 Level 3)](diagrams/export/04-geospatial-latency.png)
 
-*Figure 4. The components inside the Matching Engine. Solid arrows are direct calls on the matching path, numbered 1–4 in the order the Match Request Handler runs them, with the budget for each step from §4.3. Dashed arrows are Kafka events and never block a match: the Location Consumer keeps the Redis index fresh from `driver.location.v1`, and the Match Event Publisher sends `MatchFound` to `match.events.v1` without waiting for a reply. The caller is Trip Management, which has already locked the fare; the rate limiter sits in front of it at the API Gateway.*
+*Figure 4. The components inside the Matching Engine. Solid arrows are direct calls on the matching path, numbered 1–4 in the order the Match Request Handler runs them, with the budget for each step from Section 4.3. Dashed arrows are Kafka events and never block a match: the Location Consumer keeps the Redis index fresh from `driver.location.v1`, and the Match Event Publisher sends `MatchFound` to `match.events.v1` without waiting for a reply. The caller is Trip Management, which has already locked the fare; the rate limiter sits in front of it at the API Gateway.*
 
 ---
 
@@ -366,7 +366,7 @@ Redis is deployed as **Amazon ElastiCache (Valkey engine, Redis-API compatible)*
 
 ![Figure 5 — Deployment and region topology](diagrams/export/05-infrastructure-cost.png)
 
-*Figure 5. One region cell expanded; the other two are identical. Solid arrows are synchronous calls, dashed arrows asynchronous event flow. Each tier is annotated with its monthly cost, so the figure doubles as a visual breakdown of §5.5. Service-to-service call flow is in Figure 3; database design in §2; geo-index layout in §4.*
+*Figure 5. One region cell expanded; the other two are identical. Solid arrows are synchronous calls, dashed arrows asynchronous event flow. Each tier is annotated with its monthly cost, so the figure doubles as a visual breakdown of Section 5.5. Service-to-service call flow is in Figure 3; database design in Section 2; geo-index layout in Section 4.*
 
 ### 5.1 Region cells and blast radius
 
@@ -374,7 +374,7 @@ A cell owns its drivers and trips outright — a cell-based architecture [R15] i
 
 - **Matching never crosses a cell boundary**, because a driver 8,000 km away is never a candidate. The partitioning is a property of the domain, not an imposed constraint.
 - **Only two things are global**, and neither is on the matching path: Identity & Profile reference data replicated through DynamoDB global tables [R26], and the analytics and archive lake in S3 with cross-region replication.
-- **Network-partition answer:** a cell severed from the others keeps matching, pricing and trip completion running on local state, losing only cross-region profile propagation, which is eventually consistent by design (§1.6). The failure domain is one region's riders, not the platform.
+- **Network-partition answer:** a cell severed from the others keeps matching, pricing and trip completion running on local state, losing only cross-region profile propagation, which is eventually consistent by design (Section 1.6). The failure domain is one region's riders, not the platform.
 - **Each cell spans three Availability Zones**, so an AZ loss is absorbed inside the cell by the managed services' own failover.
 
 ### 5.2 Compute topology and instance sizing
@@ -392,19 +392,19 @@ AWS encodes a machine's shape in its name. In `c7g.2xlarge`: `c` is compute-opti
 | Identity & Profile | Read-mostly | c7g.2xlarge (8 vCPU / 16 GiB) | On-Demand | 2 → 6 |
 | Receipts, reconciliation, reports | Low-frequency, bursty | Lambda | Serverless [R12] | — |
 
-**Where the pod counts come from.** The ride-request rate is small — ~12 req/s average, ~60/s at the 5× peak (§0.1) — which one pod could absorb on its own. Almost the whole fleet is therefore sized by the **GPS stream, not by ride requests**, and that is also why cost per ride lands so far below the ceiling.
+**Where the pod counts come from.** The ride-request rate is small — ~12 req/s average, ~60/s at the 5× peak (Section 0.1) — which one pod could absorb on its own. Almost the whole fleet is therefore sized by the **GPS stream, not by ride requests**, and that is also why cost per ride lands so far below the ceiling.
 
 - **Driver Location Ingestion** is the heaviest consumer. A cell's steady share is 12,500 pings/s, and one pod on two reserved vCPU sustains ~2,500 pings/s including the WebSocket read and the Kafka produce — five pods carry that, so the baseline is six, giving two per Availability Zone. The **24-pod ceiling provides ~60,000 pings/s**, which is what lets one cell absorb the entire platform peak of 37,500 pings/s if the other two become unreachable.
-- **Matching Engine** is sized off the same stream rather than its own request rate, because every ping updates the Redis geo-index (§4.2). Its ~20 matches/s per cell at peak is negligible beside 75,000 Redis commands/s, which is what fixes the floor at eight pods.
-- **Trip Management, Surge Pricing and Billing & Notifications** are sized for redundancy and event fan-out, not request throughput. Their baselines are AZ-spread floors, and the request-rate trigger in §5.3 is a guard that should rarely fire.
+- **Matching Engine** is sized off the same stream rather than its own request rate, because every ping updates the Redis geo-index (Section 4.2). Its ~20 matches/s per cell at peak is negligible beside 75,000 Redis commands/s, which is what fixes the floor at eight pods.
+- **Trip Management, Surge Pricing and Billing & Notifications** are sized for redundancy and event fan-out, not request throughput. Their baselines are AZ-spread floors, and the request-rate trigger in Section 5.3 is a guard that should rarely fire.
 
 **Serverless is confined to low-frequency paths.** Per-request pricing is excellent at receipt volume (≈10M invocations/month/cell, ≈$60) and poor at 37,500 pings/s, where a long-lived pod holding a WebSocket is roughly two orders of magnitude cheaper than an invocation per ping. The rule: per-request billing for bursty, infrequent work; reserved capacity for sustained streams.
 
 **Spot interruption is a reconnect, not a lost ride.**
 
 - Capacity-optimised allocation [R18] spreads each pool across at least four instance types and three AZs; two node groups per cluster with pod topology spread constraints mean no service is ever entirely on Spot.
-- The Node Termination Handler [R19] cordons and drains on the two-minute interruption notice [R17]; pods terminate gracefully inside the gRPC deadline propagated per §3.1.
-- **No ride state lives in a pod** — trip state is in Aurora (§2.1), driver positions in Kafka and Redis — so a reclaimed node costs one client reconnection.
+- The Node Termination Handler [R19] cordons and drains on the two-minute interruption notice [R17]; pods terminate gracefully inside the gRPC deadline propagated per Section 3.1.
+- **No ride state lives in a pod** — trip state is in Aurora (Section 2.1), driver positions in Kafka and Redis — so a reclaimed node costs one client reconnection.
 - The On-Demand baseline is covered by one-year Compute Savings Plans [R13]; burst capacity is not committed.
 
 ### 5.3 Auto-scaling triggers
@@ -421,7 +421,7 @@ Horizontal Pod Autoscaler on the metrics below, with Cluster Autoscaler provisio
 | Node groups | Unschedulable pods | Any pod pending >30 s | Node <50% utilised 10 min | 6–60 nodes |
 
 - **Scaling is asymmetric** — fast out, slow in — so a surge arriving in seconds is met immediately while recovery does not flap.
-- **The Matching Engine is capped at the 48 partitions** of `driver.location.v1` (§3.2), beyond which extra consumers sit idle.
+- **The Matching Engine is capped at the 48 partitions** of `driver.location.v1` (Section 3.2), beyond which extra consumers sit idle.
 - **Known events are pre-warmed on a schedule** — match fixtures, concert end times, forecast storms — because provisioning a node takes two to four minutes, longer than a 5× spike takes to arrive. Reactive scaling handles only the unpredictable remainder.
 
 ### 5.4 Storage tiering
@@ -449,62 +449,86 @@ Monthly, per cell, at 730 hours:
 |---|---|---|
 | EKS control plane | 1 cluster × $0.10/h [R6] | $73 |
 | EC2 worker nodes | 20 nodes averaged over the month, 8 vCPU each: 6 On-Demand @ $0.303/h + 14 Spot @ $0.146/h, blended across the 65% c7g / 35% m7g fleet above [R4], [R5], [R14] | $2,822 |
-| Amazon MSK | 6 brokers, kafka.m7g.large (2 vCPU / 8 GiB), @ $0.204/h + 500 GB broker storage [R7] | $944 |
+| Amazon MSK brokers | 6 brokers, kafka.m7g.large (2 vCPU / 8 GiB), @ $0.204/h + 500 GB broker storage [R7] | $944 |
+| MSK Connect | Debezium CDC runtime for the transactional outbox (Section 2.4): 2 workers × 2 MCU @ $0.11/MCU-h [R7] | $321 |
 | ElastiCache (Redis) | 3 shards × 2 nodes, cache.r7g.large (2 vCPU / 13 GiB), @ $0.219/h [R8] | $959 |
 | Aurora PostgreSQL | 1 writer + 2 readers, db.r7g.xlarge (4 vCPU / 32 GiB), @ $0.478/h + storage and I/O (Trip Management and Billing databases) [R9], [R25] | $1,247 |
 | DynamoDB | On-demand, ≈100M write units + reads (Surge Pricing, Identity & Profile) [R10] | $200 |
 | S3 and lifecycle | Ingest, tiering, requests [R11] | $300 |
 | Lambda | ≈10M invocations [R12] | $60 |
-| Load balancers and data transfer | Egress and cross-AZ | $500 |
-| Observability | Metrics, logs, traces | $600 |
-| **Cell total** | | **≈$7,700** |
+| Load balancers | ALB + NLB hourly and capacity units | $200 |
+| NAT Gateway | 3 AZs × $0.045/h + ≈2 TB processed @ $0.045/GB [R28] | $189 |
+| Data transfer | ≈4 TB internet egress @ $0.09/GB + ≈20 TB cross-AZ @ $0.01/GB each way [R4] | $800 |
+| Backups and PITR | Aurora backup storage, DynamoDB point-in-time recovery | $150 |
+| Security and compliance | WAF, GuardDuty, KMS, Config, Secrets Manager | $700 |
+| Observability | ≈1.8 TB/month logs @ $0.50/GB, custom metrics, X-Ray traces [R29] | $2,200 |
+| **Cell total** | | **≈$11,200** |
 
 | Roll-up | Monthly (USD) |
 |---|---|
-| 3 region cells | $23,100 |
-| Global layer — Route 53, CloudFront, cross-region replication, analytics lake, dev and staging | $7,200 |
-| **Platform total** | **≈$30,300** |
+| 3 region cells | $33,500 |
+| Global layer — Route 53, CloudFront, cross-region replication, analytics lake | $2,350 |
+| Non-production environments — dev, staging, QA | $3,900 |
+| Subtotal | $39,700 |
+| AWS Business Support+ — 9% of the first $10k of spend, 7% above it [R30] | $3,000 |
+| **Platform total** | **≈$42,700** |
 
 | Cost per completed ride | |
 |---|---|
 | Rides per month | 30,000,000 |
-| Cost per ride | $0.00101 = **0.30 LKR** |
+| **AWS infrastructure per ride** | $0.00142 = **0.43 LKR** |
 | Assignment ceiling | 10 LKR |
-| **Headroom** | **97% below ceiling** |
+| **Headroom** | **96% below ceiling** |
 
-### 5.6 Sensitivity and scope
+Three lines are included deliberately because they are commonly omitted and materially change the result: **MSK Connect**, without which the outbox pattern of Section 2.4 has no CDC runtime; **AWS Support**, which is a percentage of spend and unavoidable for a production platform; and **observability**, whose true cost at 37,500 pings/s is several times a naive allowance.
 
-**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,418/cell and the platform to ≈$35,100/month — 0.35 LKR per ride, still far inside budget. Spot saves 36% of compute but only 14% of the total bill. At this scale the **managed data tier, not compute, dominates cost**; the largest remaining lever is Redis and Aurora right-sizing, not cheaper instances.
+### 5.6 Sensitivity, third-party cost and scope
 
-**Cost per ride improves with volume, and degrades sharply without it.** Auto-scaling means the bill tracks average load, not peak, so a 5× spike sustained three hours a day adds only about 8% to compute — and because a sustained rise in demand also multiplies completed rides, the fixed managed-service tier amortises over more of them. The risk runs the other way: at single-market volumes the ≈$3,200/cell managed floor dominates.
+**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,418/cell and the platform to ≈$47,800/month — 0.48 LKR per ride, still far inside budget. Spot saves 36% of compute but only **11% of the total bill**. At this scale the **managed data tier and observability, not compute, dominate cost**; the largest remaining levers are log volume and Redis/Aurora right-sizing, not cheaper instances.
+
+**Cost per ride improves with volume, and degrades sharply without it.** Auto-scaling means the bill tracks average load, not peak, so a 5× spike sustained three hours a day adds only about 8% to compute — and because a sustained rise in demand also multiplies completed rides, the fixed tier amortises over more of them. The risk runs the other way: at single-market volumes the ≈$3,900/cell fixed floor dominates.
 
 | Footprint | Rides/day | Monthly | Cost per ride |
 |---|---|---|---|
-| 1 cell, minimum viable | 20,000 | ≈$4,500 (1.4M LKR) | 2.25 LKR |
-| 1 cell, moderate load | 50,000 | ≈$5,800 (1.7M LKR) | 1.16 LKR |
-| 1 cell, at capacity | 150,000 | ≈$7,700 (2.3M LKR) | 0.51 LKR |
-| **3 cells (this design)** | **1,000,000** | **≈$30,300 (9.1M LKR)** | **0.30 LKR** |
+| 1 cell, minimum viable | 20,000 | ≈$7,400 (2.2M LKR) | 3.70 LKR |
+| 1 cell, moderate load | 50,000 | ≈$8,700 (2.6M LKR) | 1.74 LKR |
+| 1 cell, at capacity | 150,000 | ≈$12,100 (3.6M LKR) | 0.81 LKR |
+| **3 cells (this design)** | **1,000,000** | **≈$42,700 (12.8M LKR)** | **0.43 LKR** |
 
-Per-ride cost is five to seven times worse at launch-market scale, so the architecture is cheap **because of** scale, not in spite of it — though the 10 LKR target is still met from day one. A fourth cell should be justified by latency or data-residency requirements, never by traffic growth alone. Single-cell rows scale compute to the stated load and hold the managed tier at its multi-AZ minimum, which is what sets the floor.
+Per-ride cost is roughly nine times worse at minimum launch scale, so the architecture is cheap **because of** scale, not in spite of it — though the 10 LKR target is met at every footprint. A fourth cell should be justified by latency or data-residency requirements, never by traffic growth alone.
 
-**Currency exposure.** AWS bills in USD while launch-market revenue is earned in LKR. At the 300 LKR/USD assumption (§0.1) the platform total is **9.1M LKR/month (≈109M LKR/year)**; a 20% rupee depreciation to 360 raises it to **10.9M LKR/month with no change in usage at all** — a larger swing than the entire Spot saving. The mitigations are commercial rather than architectural: Savings Plans fix the USD rate for the committed baseline, and fare or commission structures should track the exchange rate.
+**Third-party services, and the total cost per ride.** The figures above are AWS infrastructure — what the brief's "cloud infrastructure budget" denotes. Operating the platform also consumes metered third-party APIs (Section 1.1), and these are **larger than the infrastructure itself**:
 
-**Scope.** This figure covers the core backend defined in the brief. It excludes third-party costs that dominate real ride-hailing unit economics — maps and geocoding calls (§1.1), payment processor fees, SMS and push delivery — which are precisely what the remaining ~9.7 LKR of headroom absorbs. Against a typical 400 LKR urban fare, the 10 LKR ceiling is 2.5% of the fare and 0.30 LKR is 0.075%, or about **0.38% of platform commission** at a 20% take rate. The infrastructure target is met with a wide margin; the commercial risk sits outside this boundary.
+| Component | Assumption | Monthly | Per ride |
+|---|---|---|---|
+| Maps/routing, volume tier | 3 route calls/ride (90M/month) @ $0.75 per 1,000 [R31] | $67,500 | 0.67 LKR |
+| Maps/routing, published list | same volume @ $5.00 per 1,000 [R31] | $450,000 | 4.50 LKR |
+| Push notifications | ≈10 per ride @ $0.50/million [R32] | $150 | <0.01 LKR |
+| SMS and OTP | assumed 3% of rides at ≈$0.03; per-country rate not published [R32] | $27,000 | 0.27 LKR |
+
+| Scenario | AWS | Third-party | **Total per ride** |
+|---|---|---|---|
+| Negotiated / high-volume maps pricing | 0.43 | 0.95 | **1.37 LKR** |
+| Published list maps pricing | 0.43 | 4.77 | **5.20 LKR** |
+
+Both scenarios sit inside the 10 LKR ceiling, but the spread is the finding: **the dominant cost variable is the maps contract, not the architecture.** Any per-ride figure quoted without stating its maps pricing tier is not comparable with another.
+
+**Scope.** Payment processing fees are excluded deliberately — at roughly 2.9% of a 400 LKR fare they are about 11.6 LKR per ride on their own, more than the entire ceiling, which confirms the 10 LKR target is a **technology-cost** target rather than a per-ride profit-and-loss line. Against that 400 LKR fare, the ceiling is 2.5% and the 1.37 LKR total is 0.34%, or about 1.7% of platform commission at a 20% take rate. The infrastructure target is met with a wide margin; the commercial risk sits in the maps and payment contracts, outside this boundary.
 
 ---
 
 ## 6. Summary and requirements check
 
-UrbanRide decomposes into seven services under one principle: split where workload or consistency diverges, merge where it does not. The 625× gap between location ingestion and ride requests drives the design: GPS goes through Kafka into a Matching-owned Redis geo-index (AP), while trip state and money stay in PostgreSQL behind a hybrid Saga with an outbox (CP). The ride-request transaction completes in ~155 ms on the happy path against a 500 ms budget, and the platform costs 0.30 LKR per completed ride against a 10 LKR ceiling.
+UrbanRide decomposes into seven services under one principle: split where workload or consistency diverges, merge where it does not. The 625× gap between location ingestion and ride requests drives the design: GPS goes through Kafka into a Matching-owned Redis geo-index (AP), while trip state and money stay in PostgreSQL behind a hybrid Saga with an outbox (CP). The ride-request transaction completes in ~155 ms on the happy path against a 500 ms budget, and AWS infrastructure costs 0.43 LKR per completed ride — 1.37 LKR including third-party APIs — against a 10 LKR ceiling.
 
 | Requirement | How it is met |
 |---|---|
-| 1,000,000 completed rides/day | Sized end-to-end from this figure (§0.1); derived loads: 60 req/s peak, 37,500 pings/s, 781 events/s per Kafka partition, 75,000 Redis commands/s, 648 GB/day GPS |
-| Sub-500 ms transaction latency | 155 ms happy path + 345 ms margin (§4.3); bulkheads and circuit breakers keep the margin under surge (§4.6) |
-| Absorb a 5× surge | Kafka buffering (§3.4), asymmetric and scheduled auto-scaling (§5.3), optimistic driver lock (§4.5), rate limiting at the edge (§4.6) |
-| Under 10 LKR per completed ride | 0.30 LKR/ride, 97% headroom (§5.5); 0.35 LKR even with no Spot capacity (§5.6) |
-| Every service has a named datastore and protocol | §2.1 and §3.1 |
-| Consistent CAP reasoning | Per-service stance (§1.6) applied in §2 (Saga), §4 (AP index) and §5 (cell isolation) |
+| 1,000,000 completed rides/day | Sized end-to-end from this figure (Section 0.1); derived loads: 60 req/s peak, 37,500 pings/s, 781 events/s per Kafka partition, 75,000 Redis commands/s, 648 GB/day GPS |
+| Sub-500 ms transaction latency | 155 ms happy path + 345 ms margin (Section 4.3); bulkheads and circuit breakers keep the margin under surge (Section 4.6) |
+| Absorb a 5× surge | Kafka buffering (Section 3.4), asymmetric and scheduled auto-scaling (Section 5.3), optimistic driver lock (Section 4.5), rate limiting at the edge (Section 4.6) |
+| Under 10 LKR per completed ride | 0.43 LKR/ride of AWS infrastructure, 96% headroom (Section 5.5); 1.37 LKR including maps, push and SMS; 0.48 LKR even with no Spot capacity (Section 5.6) |
+| Every service has a named datastore and protocol | Sections 2.1 and 3.1 |
+| Consistent CAP reasoning | Per-service stance (Section 1.6) applied in Section 2 (Saga), Section 4 (AP index) and Section 5 (cell isolation) |
 
 ---
 
@@ -514,28 +538,28 @@ The decisions that shape the design, each with the alternative considered and th
 
 | # | Decision | Alternative considered | Why this choice |
 |---|---|---|---|
-| D1 | Seven services split by workload and consistency profile (§1.2) | Monolith; finer split (separate Notifications, Fare Calculation) | The 625× ingestion-to-request ratio must scale in isolation; finer splits add hops with no scaling benefit |
-| D2 | Trip Management orchestrates booking synchronously; completion is choreographed over Kafka (§2.2) | Fully choreographed Saga; two-phase commit | Booking must reject an unfunded card immediately; completion must stay available under drop-off surges; 2PC does not span services |
-| D3 | Fare is locked and the card authorised **before** matching; the 500 ms budget covers `SEARCHING_DRIVER` → driver delivered (§0.3, §4.3) | Match first, then authorise | A driver is never reserved for a rider who cannot pay, and the payment provider's latency stays outside UrbanRide's budget |
-| D4 | Request path Gateway → Trip Management → Matching Engine (§3.1) | Gateway → Matching Engine directly | Trip Management is the only writer of trip state, so it must own the orchestration and persist the result |
-| D5 | Matching Engine depends only on Redis and Kafka (§4.6) | Matching Engine confirms fare with Surge Pricing per match | Removes a 40 ms synchronous dependency from the hottest path; the fare is already locked |
-| D6 | Matching Engine owns the Redis geo-index and writes it from Kafka (§2.1, §4.2) | Driver Location Ingestion writes Redis directly | The consumer of the index controls its freshness and shape; Kafka absorbs Redis slowdowns without losing pings |
-| D7 | Redis Geo (`GEOSEARCH`) over H3 / S2 (§4.1) | Uber H3, Google S2 | Sub-millisecond radius search with no second index to keep in sync at 37,500 writes/s |
-| D8 | Optimistic atomic Lua lock in Redis (§2.5, §4.5) | Pessimistic database lock | Pessimistic locking would break the 500 ms budget under a 5× surge; a failed lock costs one retry against the next candidate |
-| D9 | Transactional outbox with CDC (§2.4) | Direct dual write to database and Kafka | Eliminates lost events on crash without polling or lock contention |
-| D10 | At-least-once delivery with consumer-side idempotency (§2.3, §3.3) | Kafka exactly-once transactions end to end | Exactly-once cannot span the payment provider; idempotency keys give the same guarantee at lower cost |
-| D11 | Aurora PostgreSQL provisioned (1 writer + 2 readers) for Trip Management and Billing, two logical databases on one cluster per cell (§2.1) | Aurora Serverless v2; one cluster per service | At 12–60 tx/s the writer is far below capacity; provisioned + Savings Plan is cheaper; logical isolation preserves database-per-service |
-| D12 | DynamoDB for Surge Pricing and Identity & Profile (§2.1) | PostgreSQL for identity | Key-value access patterns, pay-per-request burst pricing, and global tables for cross-cell profile replication |
-| D13 | `match.events.v1` published fire-and-forget by the stateless Matching Engine (§3.2) | Route `MatchFound` through an outbox | The Matching Engine has no database; the authoritative assignment is `DriverAssigned` from Trip Management's outbox |
-| D14 | Three self-contained regional cells; no cross-cell matching (§5.1) | Single global deployment; active-active replication | A driver in another region is never a candidate, so cell isolation costs nothing and bounds the blast radius to one region |
-| D15 | Spot capacity above an On-Demand floor for stateless services; managed services for everything stateful (§5.2) | All On-Demand; self-managed Kafka and Redis on Spot | No ride state lives in a pod, so an interruption is a reconnect; self-managing stateful systems on interruptible capacity is a large operational risk for a 14% saving |
-| D16 | Serverless confined to receipts, reconciliation and reports (§5.2) | Lambda for GPS ingestion | Per-invocation pricing is two orders of magnitude more expensive than a long-lived WebSocket pod at 37,500 pings/s |
+| D1 | Seven services split by workload and consistency profile (Section 1.2) | Monolith; finer split (separate Notifications, Fare Calculation) | The 625× ingestion-to-request ratio must scale in isolation; finer splits add hops with no scaling benefit |
+| D2 | Trip Management orchestrates booking synchronously; completion is choreographed over Kafka (Section 2.2) | Fully choreographed Saga; two-phase commit | Booking must reject an unfunded card immediately; completion must stay available under drop-off surges; 2PC does not span services |
+| D3 | Fare is locked and the card authorised **before** matching; the 500 ms budget covers `SEARCHING_DRIVER` → driver delivered (Sections 0.3 and 4.3) | Match first, then authorise | A driver is never reserved for a rider who cannot pay, and the payment provider's latency stays outside UrbanRide's budget |
+| D4 | Request path Gateway → Trip Management → Matching Engine (Section 3.1) | Gateway → Matching Engine directly | Trip Management is the only writer of trip state, so it must own the orchestration and persist the result |
+| D5 | Matching Engine depends only on Redis and Kafka (Section 4.6) | Matching Engine confirms fare with Surge Pricing per match | Removes a 40 ms synchronous dependency from the hottest path; the fare is already locked |
+| D6 | Matching Engine owns the Redis geo-index and writes it from Kafka (Sections 2.1 and 4.2) | Driver Location Ingestion writes Redis directly | The consumer of the index controls its freshness and shape; Kafka absorbs Redis slowdowns without losing pings |
+| D7 | Redis Geo (`GEOSEARCH`) over H3 / S2 (Section 4.1) | Uber H3, Google S2 | Sub-millisecond radius search with no second index to keep in sync at 37,500 writes/s |
+| D8 | Optimistic atomic Lua lock in Redis (Sections 2.5 and 4.5) | Pessimistic database lock | Pessimistic locking would break the 500 ms budget under a 5× surge; a failed lock costs one retry against the next candidate |
+| D9 | Transactional outbox with CDC (Section 2.4) | Direct dual write to database and Kafka | Eliminates lost events on crash without polling or lock contention |
+| D10 | At-least-once delivery with consumer-side idempotency (Sections 2.3 and 3.3) | Kafka exactly-once transactions end to end | Exactly-once cannot span the payment provider; idempotency keys give the same guarantee at lower cost |
+| D11 | Aurora PostgreSQL provisioned (1 writer + 2 readers) for Trip Management and Billing, two logical databases on one cluster per cell (Section 2.1) | Aurora Serverless v2; one cluster per service | At 12–60 tx/s the writer is far below capacity; provisioned + Savings Plan is cheaper; logical isolation preserves database-per-service |
+| D12 | DynamoDB for Surge Pricing and Identity & Profile (Section 2.1) | PostgreSQL for identity | Key-value access patterns, pay-per-request burst pricing, and global tables for cross-cell profile replication |
+| D13 | `match.events.v1` published fire-and-forget by the stateless Matching Engine (Section 3.2) | Route `MatchFound` through an outbox | The Matching Engine has no database; the authoritative assignment is `DriverAssigned` from Trip Management's outbox |
+| D14 | Three self-contained regional cells; no cross-cell matching (Section 5.1) | Single global deployment; active-active replication | A driver in another region is never a candidate, so cell isolation costs nothing and bounds the blast radius to one region |
+| D15 | Spot capacity above an On-Demand floor for stateless services; managed services for everything stateful (Section 5.2) | All On-Demand; self-managed Kafka and Redis on Spot | No ride state lives in a pod, so an interruption is a reconnect; self-managing stateful systems on interruptible capacity is a large operational risk for an 11% saving |
+| D16 | Serverless confined to receipts, reconciliation and reports (Section 5.2) | Lambda for GPS ingestion | Per-invocation pricing is two orders of magnitude more expensive than a long-lived WebSocket pod at 37,500 pings/s |
 
 ---
 
 ## References
 
-All AWS prices are us-east-1 published list prices, accessed 12 September 2026, used as planning estimates rather than quotations.
+All AWS prices are us-east-1 published list prices, accessed 12–13 September 2026, used as planning estimates rather than quotations.
 
 [R1] gRPC Authors, "Deadlines," gRPC documentation. [Online]. Available: https://grpc.io/docs/guides/deadlines/. [Accessed: Sep. 12, 2026].
 
@@ -590,3 +614,13 @@ All AWS prices are us-east-1 published list prices, accessed 12 September 2026, 
 [R26] Amazon Web Services, "Global tables: multi-Region replication for DynamoDB," Amazon DynamoDB Developer Guide. [Online]. Available: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GlobalTables.html. [Accessed: Sep. 12, 2026].
 
 [R27] Amazon Web Services, "What is Valkey?," Amazon ElastiCache. [Online]. Available: https://aws.amazon.com/elasticache/what-is-valkey/. [Accessed: Sep. 12, 2026].
+
+[R28] Amazon Web Services, "Amazon VPC pricing." [Online]. Available: https://aws.amazon.com/vpc/pricing/. [Accessed: Sep. 13, 2026].
+
+[R29] Amazon Web Services, "Amazon CloudWatch pricing." [Online]. Available: https://aws.amazon.com/cloudwatch/pricing/. [Accessed: Sep. 13, 2026].
+
+[R30] Amazon Web Services, "AWS Support plan pricing." [Online]. Available: https://aws.amazon.com/premiumsupport/pricing/. [Accessed: Sep. 13, 2026].
+
+[R31] Google, "Google Maps Platform pricing." [Online]. Available: https://developers.google.com/maps/billing-and-pricing/pricing. [Accessed: Sep. 13, 2026].
+
+[R32] Amazon Web Services, "Amazon SNS pricing." [Online]. Available: https://aws.amazon.com/sns/pricing/. [Accessed: Sep. 13, 2026].

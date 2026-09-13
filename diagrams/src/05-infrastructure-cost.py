@@ -37,7 +37,7 @@ EDGE = {"fontsize": "13", "fontname": "Helvetica", "color": "#4A4A4A"}
 ASYNC = Edge(style="dashed", color="#EF6C00")
 
 with Diagram(
-    "UrbanRide — Deployment and Cost Topology  ·  3 region cells  ·  ~$30,300/month  ·  0.30 LKR per ride",
+    "UrbanRide — Deployment and Cost Topology  ·  3 region cells  ·  ~$42,700/month  ·  1.37 LKR per ride",
     filename="diagrams/export/05-infrastructure-cost",
     outformat="png",
     show=False,
@@ -50,7 +50,7 @@ with Diagram(
     users = Users("Riders and drivers")
     dns = Route53("Route 53\nlatency routing")
 
-    with Cluster("Region cell — eu-west-1 · 3 Availability Zones · ≈$7,700/month",
+    with Cluster("Region cell — eu-west-1 · 3 Availability Zones · ≈$11,200/month",
                  graph_attr={"margin": "26", "bgcolor": "#FFFDF5", "fontsize": "19", "pencolor": "#B0A268"}):
 
         with Cluster("Edge", graph_attr={"margin": "26", "bgcolor": "#F5F5F5", "fontsize": "15"}):
@@ -70,12 +70,12 @@ with Diagram(
                          graph_attr={"margin": "26", "bgcolor": "#FFF3E0", "fontsize": "15", "pencolor": "#EF6C00"}):
                 spot = EC2SpotInstance("14 nodes · 8 vCPU each\n$0.146/h blended")
 
-        with Cluster("Managed data tier — multi-AZ  ·  $3,350/mo, the dominant cost",
+        with Cluster("Managed data tier — multi-AZ  ·  $3,671/mo incl. MSK Connect",
                      graph_attr={"margin": "26", "bgcolor": "#E8F5E9", "fontsize": "17", "pencolor": "#2E7D32"}):
 
             with Cluster("Stream and geo cache",
                          graph_attr={"margin": "26", "bgcolor": "#DCEFDD", "fontsize": "14"}):
-                msk = ManagedStreamingForKafka("Amazon MSK\n6 × kafka.m7g.large\n$944/mo")
+                msk = ManagedStreamingForKafka("Amazon MSK + Connect\n6 brokers + Debezium CDC\n$1,265/mo")
                 cache = ElastiCache("ElastiCache Valkey\n3 shards × 2\n$959/mo")
 
             with Cluster("Systems of record",
@@ -88,7 +88,7 @@ with Diagram(
             lam = Lambda("Lambda\nreceipts, reconciliation\n$60/mo")
             s3 = S3("S3 — Parquet\n81 GB/day\n$300/mo")
 
-    peers = General("2 further cells\nap-south-1 · us-east-1\nidentical, ~$7,700/mo each")
+    peers = General("2 further cells\nap-south-1 · us-east-1\nidentical, ~$11,200/mo each")
 
     with Cluster("Global layer — asynchronous only, never on the matching path",
                  graph_attr={"margin": "26", "bgcolor": "#EDE7F6", "fontsize": "17", "pencolor": "#5E35B1"}):

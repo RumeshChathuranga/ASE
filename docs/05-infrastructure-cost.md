@@ -7,7 +7,7 @@ Sizing is derived from the agreed platform assumptions: 1,000,000 completed ride
 <!-- Regenerate with: python diagrams/src/05-infrastructure-cost.py (requires the `diagrams` package and graphviz). -->
 ![UrbanRide deployment and region topology](../diagrams/export/05-infrastructure-cost.png)
 
-*Figure 5. One cell expanded; the other two are identical. Solid arrows are synchronous, dashed asynchronous. Each tier carries its monthly cost, so the figure doubles as a visual form of §5.5. Service-to-service call flow is covered by the container diagram in §3; database design belongs to §2 and the geospatial index layout to §4 — this section sizes and prices what they specify.*
+*Figure 5. One cell expanded; the other two are identical. Solid arrows are synchronous, dashed asynchronous. Each tier carries its monthly cost, so the figure doubles as a visual form of Section 5.5. Service-to-service call flow is covered by the container diagram in Section 3; database design belongs to Section 2 and the geospatial index layout to Section 4 — this section sizes and prices what they specify.*
 
 ## 5.1 Region cells and blast radius
 
@@ -37,14 +37,14 @@ AWS encodes a machine's shape in its name. In `c7g.2xlarge`: `c` is compute-opti
 
 - **Driver Location Ingestion** is heaviest: a cell's steady share is 12,500 pings/s, and one pod on two reserved vCPU sustains ~2,500 pings/s including the WebSocket read and Kafka produce. Five pods carry that, so baseline is six, giving two per AZ. The **24-pod ceiling gives ~60,000 pings/s**, letting one cell absorb the entire 37,500 pings/s platform peak if the other two become unreachable.
 - **Matching Engine** is sized off the same stream, because every ping updates the geospatial index. Its 20 matches/s per cell at peak is negligible beside that, which fixes the floor at eight pods.
-- **Trip Management, Surge Pricing, Billing** are sized for redundancy and event fan-out, not throughput. Baselines are AZ-spread floors, and the request-rate trigger in §5.3 is a guard that should rarely fire.
+- **Trip Management, Surge Pricing, Billing** are sized for redundancy and event fan-out, not throughput. Baselines are AZ-spread floors, and the request-rate trigger in Section 5.3 is a guard that should rarely fire.
 
 **Serverless is confined to low-frequency paths.** Per-request pricing is excellent at receipt volume (~10M invocations/month/cell, ~$60) and poor at 37,500 pings/s, where a long-lived pod holding a WebSocket is roughly two orders of magnitude cheaper. The rule: per-request billing for bursty infrequent work, reserved capacity for sustained streams.
 
 **Spot interruption is a reconnect, not a lost ride.**
 
 - Capacity-optimized allocation [15] spreads each pool across ≥4 instance types and 3 AZs; two node groups per cluster with pod topology spread mean no service is ever entirely on Spot.
-- The Node Termination Handler [16] cordons and drains on the two-minute interruption notice [14]; pods terminate inside the gRPC deadline propagated in §3.
+- The Node Termination Handler [16] cordons and drains on the two-minute interruption notice [14]; pods terminate inside the gRPC deadline propagated in Section 3.
 - **No ride state lives in a pod** — trip state is in Aurora, positions in Kafka and Valkey — so a reclaimed node costs one client reconnection.
 - The On-Demand baseline is covered by one-year Compute Savings Plans [10]; burst capacity is not committed.
 
@@ -62,7 +62,7 @@ Horizontal Pod Autoscaler on the metrics below, with Cluster Autoscaler provisio
 | Node groups | Unschedulable pods | Any pod pending >30 s | Node <50% utilised 10 min | 6–60 nodes |
 
 - **Scaling is asymmetric** — fast out, slow in — so a surge arriving in seconds is met immediately while recovery does not flap.
-- **Matching Engine is capped at the 48 Kafka partitions defined in §3**, beyond which extra consumers sit idle.
+- **Matching Engine is capped at the 48 Kafka partitions defined in Section 3**, beyond which extra consumers sit idle.
 - **Known events are pre-warmed on a schedule** — match fixtures, concert end times, forecast storms — because node provisioning takes two to four minutes, longer than a 5x spike takes to arrive. Reactive scaling handles only the unpredictable remainder.
 
 ## 5.4 Storage tiering
@@ -89,51 +89,75 @@ Per cell, per month, at 730 hours:
 |---|---|---|
 | EKS control plane | 1 cluster × $0.10/h [3] | $73 |
 | EC2 worker nodes | 20 nodes averaged, 8 vCPU each: 6 On-Demand @ $0.303/h + 14 Spot @ $0.146/h, blended across the 65% c7g / 35% m7g fleet above [1], [2], [11] | $2,822 |
-| Amazon MSK | 6 × kafka.m7g.large (2 vCPU / 8 GiB) @ $0.204/h + 500 GB storage [4] | $944 |
+| Amazon MSK brokers | 6 × kafka.m7g.large (2 vCPU / 8 GiB) @ $0.204/h + 500 GB storage [4] | $944 |
+| MSK Connect | Debezium CDC for the outbox: 2 workers × 2 MCU @ $0.11/MCU-h [4] | $321 |
 | ElastiCache Valkey | 3 shards × 2 nodes, cache.r7g.large (2 vCPU / 13 GiB) @ $0.219/h [5], [24] | $959 |
 | Aurora PostgreSQL | 1 writer + 2 readers, db.r7g.xlarge (4 vCPU / 32 GiB) @ $0.478/h + storage/IO [6], [22] | $1,247 |
 | DynamoDB | On-demand, ~100M write units + reads [7] | $200 |
 | S3 and lifecycle | Ingest, tiering, requests [8] | $300 |
 | Lambda | ~10M invocations [9] | $60 |
-| Load balancers and data transfer | Egress and cross-AZ | $500 |
-| Observability | Metrics, logs, traces | $600 |
-| **Cell total** | | **≈$7,700** |
+| Load balancers | ALB + NLB hourly and capacity units | $200 |
+| NAT Gateway | 3 AZs × $0.045/h + ~2 TB processed @ $0.045/GB [25] | $189 |
+| Data transfer | ~4 TB internet egress @ $0.09/GB + ~20 TB cross-AZ @ $0.01/GB each way [1] | $800 |
+| Backups and PITR | Aurora backup storage, DynamoDB point-in-time recovery | $150 |
+| Security and compliance | WAF, GuardDuty, KMS, Config, Secrets Manager | $700 |
+| Observability | ~1.8 TB/month logs @ $0.50/GB, custom metrics, X-Ray traces [26] | $2,200 |
+| **Cell total** | | **≈$11,200** |
 
 | Roll-up | Monthly (USD) |
 |---|---|
-| 3 region cells | $23,100 |
-| Global layer — Route 53, CloudFront, cross-region replication, analytics lake, dev/staging | $7,200 |
-| **Platform total** | **≈$30,300** |
+| 3 region cells | $33,500 |
+| Global layer — Route 53, CloudFront, cross-region replication, analytics lake | $2,350 |
+| Non-production environments — dev, staging, QA | $3,900 |
+| Subtotal | $39,700 |
+| AWS Business Support+ — 9% of the first $10k, 7% above [27] | $3,000 |
+| **Platform total** | **≈$42,700** |
 
 | Cost per completed ride | |
 |---|---|
 | Rides per month | 30,000,000 |
-| Cost per ride | $0.00101 = **0.30 LKR** |
+| **AWS infrastructure per ride** | $0.00142 = **0.43 LKR** |
 | Assignment ceiling | 10 LKR |
-| **Headroom** | **97% below ceiling** |
+| **Headroom** | **96% below ceiling** |
 
-## 5.6 Sensitivity and scope
+Three lines here are commonly left out of student cost models and are included deliberately: **MSK Connect**, without which the outbox pattern in Section 3 has no CDC runtime; **AWS Support**, which is a percentage of spend and unavoidable for a production platform; and **observability**, whose true cost at 37,500 pings/s is several times the naive allowance.
 
-**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,418/cell and the platform to ≈$35,100/month — 0.35 LKR per ride, still far inside budget. Spot saves 36% of compute but only 14% of the total bill. At this scale the **managed data tier, not compute, dominates cost**; the largest remaining lever is Valkey and Aurora right-sizing, not cheaper instances.
+## 5.6 Sensitivity, third-party cost and scope
 
-**Cost per ride improves with volume, and degrades sharply without it.** Auto-scaling means the bill tracks average load, not peak, so a 5x spike for three hours a day adds only ~8% to compute — and because a sustained demand increase also multiplies completed rides, the fixed managed tier amortises over more of them. The risk runs the other way: at single-market volumes the ~$3,200/cell managed floor dominates.
+**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,418/cell and the platform to ≈$47,800/month — 0.48 LKR per ride, still far inside budget. Spot saves 36% of compute but only **11% of the total bill**. At this scale the **managed data tier and observability, not compute, dominate cost**; the largest remaining levers are log volume and Valkey/Aurora right-sizing, not cheaper instances.
+
+**Cost per ride improves with volume, and degrades sharply without it.** Auto-scaling means the bill tracks average load, not peak, so a 5x spike for three hours a day adds only ~8% to compute — and because sustained demand also multiplies completed rides, the fixed tier amortises over more of them. The risk runs the other way: at single-market volumes the ~$3,900/cell fixed floor dominates.
 
 | Footprint | Rides/day | Monthly | Cost per ride |
 |---|---|---|---|
-| 1 cell, minimum viable | 20,000 | ≈$4,500 (1.4M LKR) | 2.25 LKR |
-| 1 cell, moderate load | 50,000 | ≈$5,800 (1.7M LKR) | 1.16 LKR |
-| 1 cell, at capacity | 150,000 | ≈$7,700 (2.3M LKR) | 0.51 LKR |
-| **3 cells (this design)** | **1,000,000** | **≈$30,300 (9.1M LKR)** | **0.30 LKR** |
+| 1 cell, minimum viable | 20,000 | ≈$7,400 (2.2M LKR) | 3.70 LKR |
+| 1 cell, moderate load | 50,000 | ≈$8,700 (2.6M LKR) | 1.74 LKR |
+| 1 cell, at capacity | 150,000 | ≈$12,100 (3.6M LKR) | 0.81 LKR |
+| **3 cells (this design)** | **1,000,000** | **≈$42,700 (12.8M LKR)** | **0.43 LKR** |
 
-Per-ride cost is five to seven times worse at launch-market scale, so the architecture is cheap **because of** scale, not in spite of it — though the 10 LKR target is still met from day one. A fourth cell should be justified by latency or data residency, never by traffic growth alone. Single-cell rows scale compute to the stated load and hold the managed tier at its multi-AZ minimum, which sets the floor.
+Per-ride cost is roughly nine times worse at minimum launch scale, so the architecture is cheap **because of** scale, not in spite of it — though the 10 LKR target is met at every footprint. A fourth cell should be justified by latency or data residency, never by traffic growth alone. Single-cell rows scale compute, logging and transfer to the stated load and hold the managed tier at its multi-AZ minimum, which sets the floor.
 
-**Currency exposure.** AWS bills in USD while launch-market revenue is earned in LKR. At 300 LKR/USD the platform total is **9.1M LKR/month (~109M LKR/year)**; a 20% rupee depreciation to 360 raises it to **10.9M LKR/month with no change in usage** — a larger swing than the entire Spot saving. Mitigations are commercial, not architectural: Savings Plans fix the USD rate for the committed baseline, and fares should track the exchange rate.
+**Third-party services, and the total cost per ride.** The figures above are AWS infrastructure — what the brief's "cloud infrastructure budget" denotes. Operating the platform also consumes metered third-party APIs, and these are **larger than the infrastructure itself**:
 
-**Scope.** This covers the core backend in the brief. It excludes third-party costs that dominate real ride-hailing unit economics — maps and geocoding calls, payment processor fees, SMS and push delivery — which is what the remaining ~9.7 LKR of headroom absorbs. Against a typical 400 LKR urban fare, the 10 LKR ceiling is 2.5% of the fare and our 0.30 LKR is 0.075%, or about **0.38% of platform commission** at a 20% take rate. The infrastructure target is met with a wide margin; the commercial risk sits outside this boundary.
+| Component | Assumption | Monthly | Per ride |
+|---|---|---|---|
+| Maps/routing, volume tier | 3 route calls/ride (90M/month) @ $0.75 per 1,000 [28] | $67,500 | 0.67 LKR |
+| Maps/routing, published list | same volume @ $5.00 per 1,000 [28] | $450,000 | 4.50 LKR |
+| Push notifications | ~10 per ride @ $0.50/million [29] | $150 | <0.01 LKR |
+| SMS and OTP | assumed 3% of rides at ~$0.03; per-country rate not published [29] | $27,000 | 0.27 LKR |
+
+| Scenario | AWS | Third-party | **Total per ride** |
+|---|---|---|---|
+| Negotiated / high-volume maps pricing | 0.43 | 0.95 | **1.37 LKR** |
+| Published list maps pricing | 0.43 | 4.77 | **5.20 LKR** |
+
+Both scenarios sit inside the 10 LKR ceiling, but the spread is the finding: **the dominant cost variable is the maps contract, not the architecture.** Any per-ride figure quoted without stating its maps pricing tier is not comparable.
+
+**Scope.** Payment processing fees are excluded deliberately — at ~2.9% of a 400 LKR fare they are about 11.6 LKR per ride on their own, more than the entire ceiling, which confirms the 10 LKR target is a **technology-cost** target rather than a per-ride P&L. Against that 400 LKR fare, the ceiling is 2.5% and our 1.37 LKR total is 0.34%, or about 1.7% of platform commission at a 20% take rate. The infrastructure target is met with a wide margin; the commercial risk sits in the maps and payment contracts, outside this boundary.
 
 ## 5.7 References
 
-Prices are us-east-1 published list prices, accessed September 2026, used as planning estimates rather than quotations. Kafka topic, partition and delivery-guarantee decisions, with their own sources, are given in §3.
+Prices are us-east-1 published list prices, accessed September 2026, used as planning estimates rather than quotations. Kafka topic, partition and delivery-guarantee decisions, with their own sources, are given in Section 3.
 
 [1] Amazon Web Services, "Amazon EC2 On-Demand pricing." [Online]. Available: https://aws.amazon.com/ec2/pricing/on-demand/. [Accessed: Sep. 13, 2026].
 
@@ -182,3 +206,13 @@ Prices are us-east-1 published list prices, accessed September 2026, used as pla
 [23] Amazon Web Services, "Global tables: multi-Region replication for DynamoDB," Amazon DynamoDB Developer Guide. [Online]. Available: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GlobalTables.html. [Accessed: Sep. 13, 2026].
 
 [24] Amazon Web Services, "What is Valkey?," Amazon ElastiCache. [Online]. Available: https://aws.amazon.com/elasticache/what-is-valkey/. [Accessed: Sep. 13, 2026].
+
+[25] Amazon Web Services, "Amazon VPC pricing." [Online]. Available: https://aws.amazon.com/vpc/pricing/. [Accessed: Sep. 13, 2026].
+
+[26] Amazon Web Services, "Amazon CloudWatch pricing." [Online]. Available: https://aws.amazon.com/cloudwatch/pricing/. [Accessed: Sep. 13, 2026].
+
+[27] Amazon Web Services, "AWS Support plan pricing." [Online]. Available: https://aws.amazon.com/premiumsupport/pricing/. [Accessed: Sep. 13, 2026].
+
+[28] Google, "Google Maps Platform pricing." [Online]. Available: https://developers.google.com/maps/billing-and-pricing/pricing. [Accessed: Sep. 13, 2026].
+
+[29] Amazon Web Services, "Amazon SNS pricing." [Online]. Available: https://aws.amazon.com/sns/pricing/. [Accessed: Sep. 13, 2026].
