@@ -1,0 +1,79 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+
+participant "Trip Management" as Trip
+participant "Message Broker\n(Kafka)" as Kafka
+participant "Fare Service\n(Surge Pricing)" as Surge
+participant "Billing & Notifications" as Bill
+participant "Payment Gateway" as PG
+
+== Phase 1: Ride Booking (Upfront Pricing & Hold) ==
+-> Trip: Request Ride (Origin, Destination)
+activate Trip
+
+Trip -> Surge: API: Calculate Upfront Price
+activate Surge
+Surge --> Trip: Return Locked Fare
+deactivate Surge
+
+Trip -> Bill: API: Authorize Hold (Locked Fare)
+activate Bill
+Bill -> PG: API: Hold Funds
+activate PG
+PG --> Bill: 200 OK (Hold Success)
+deactivate PG
+Bill --> Trip: Hold Authorized
+deactivate Bill
+
+Trip -> Trip: Update State (SEARCHING_DRIVER)
+deactivate Trip
+
+== Phase 2: Ride Completion (The Saga) ==
+
+-> Trip: Ride Completed (Drop-off)
+activate Trip
+Trip -> Trip: Update State (COMPLETED)
+Trip -> Trip: Insert to Outbox (Atomic)
+Trip -> Kafka: Publish RideCompletedEvent
+deactivate Trip
+
+Kafka -> Surge: Consume RideCompletedEvent
+activate Surge
+Surge -> Surge: Validate Actual Route vs\nUpfront Locked Price
+Surge -> Surge: Insert to Outbox
+Surge -> Kafka: Publish FareCalculatedEvent
+deactivate Surge
+
+Kafka -> Bill: Consume FareCalculatedEvent
+activate Bill
+Bill -> Bill: Check Idempotency-Key
+Bill -> PG: API: Capture Authorized Hold
+activate PG
+
+alt Capture Successful (200 OK)
+    PG --> Bill: Success Response
+    Bill -> Bill: Record successful payment
+    Bill -> Kafka: Publish PaymentSucceededEvent
+else Capture Failed (402 Declined / Insufficient Funds)
+    PG --> Bill: Failure Response
+    deactivate PG
+    
+    note right of Bill: Compensating Action 1\n(Cannot rollback physical ride)
+    Bill -> Bill: Record outstanding debt
+    Bill -> Bill: Flag account (Restrict rides)
+    Bill -> Kafka: Publish PaymentFailedEvent
+    
+    Kafka -> Trip: Consume PaymentFailedEvent
+    activate Trip
+    note right of Trip: Compensating Action 2
+    Trip -> Trip: Update State (PAYMENT_PENDING)
+    deactivate Trip
+    
+    Kafka -> Bill: Consume PaymentFailedEvent
+    Bill -> Rider: SMS: "Update payment method to clear balance"
+end
+deactivate Bill
+
+@enduml
