@@ -2,8 +2,8 @@
 
 UrbanRide separates immediate ride requests from continuous GPS traffic and background billing. The request path reads the latest available location index; it never waits for Kafka consumers or payment processing. This supports the **<500 ms transaction target** while absorbing bursts. For planning, the README assumes **150,000 active drivers reporting every 4 seconds: 37,500 GPS events/second**. These figures remain provisional until recorded in `FROZEN.md`.
 
-<!-- Export ../diagrams/src/03-communication-streaming.mmd from draw.io to the image path below before compiling the ADD. -->
-![UrbanRide communication-focused C4 Level 2 container diagram](../diagrams/export/03-communication-streaming.svg)
+<!-- Source: ../diagrams/src/03-communication-streaming.mmd, fine-tuned in draw.io and exported to the PNG below. -->
+![UrbanRide communication-focused C4 Level 2 container diagram](../diagrams/export/03-communication-streaming.png)
 
 *Figure 3. Solid arrows show direct communication; dashed arrows show Kafka event flow. Service-owned databases are omitted; their design belongs to Member 2.*
 

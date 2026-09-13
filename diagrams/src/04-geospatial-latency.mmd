@@ -3,49 +3,46 @@ title: UrbanRide — Matching Engine component view (C4 Level 3)
 config:
   layout: elk
 ---
-%% UrbanRide - C4 Level 3 component view of the Matching Engine (Member 4).
-%% Import this Mermaid source into draw.io and export as:
-%% diagrams/export/04-geospatial-latency.png
-%% Solid = synchronous call on the matching path (budget in ms, see docs/04).
+%% UrbanRide - C4 Level 3 component view of the Matching Engine (Section 4).
+%% Regenerate: npx -y @mermaid-js/mermaid-cli -i diagrams/src/04-geospatial-latency.mmd -o diagrams/export/04-geospatial-latency.png -b white -w 1600 -s 2
+%% Solid = synchronous call on the matching path (budget in ms, see ADD.md section 4.3).
 %% Dashed = asynchronous Kafka event flow, never on the request path.
 %% Boxes inside the Matching Engine are components; boxes outside are containers.
+%% The fare is locked by Trip Management (Surge Pricing call) BEFORE matching starts,
+%% so the Matching Engine has no dependency on Surge Pricing.
 
 flowchart TB
-    gateway["API Gateway<br/>[Container: HTTPS / gRPC proxy]<br/>Rate limiter on match requests"]
-    kafka[("Event Stream<br/>[Container: Apache Kafka]<br/>driver.location.v1, trip.events.v1")]
+    trip["Trip Management<br/>[Container: gRPC service]<br/>Orchestrates booking; fare already locked"]
+    kafka[("Event Stream<br/>[Container: Apache Kafka]<br/>driver.location.v1, match.events.v1")]
 
     subgraph matching["Matching Engine - Container [gRPC + Kafka consumer]"]
         handler["Match Request Handler<br/>[Component: gRPC endpoint]<br/>Orchestrates one match, guards the 500 ms budget"]
         finder["Candidate Finder<br/>[Component]<br/>GEOSEARCH by radius on the city key"]
         ranker["Filter &amp; Ranker<br/>[Component]<br/>Drop non-AVAILABLE, rank by ETA / rating"]
         locker["Driver Lock<br/>[Component: Redis Lua script]<br/>Atomic AVAILABLE -> ASSIGNED flip"]
-        fare["Fare Confirmer<br/>[Component: gRPC client + circuit breaker]<br/>Falls back to last known multiplier"]
         publisher["Match Event Publisher<br/>[Component: Kafka producer]<br/>Emits MatchFound, fire-and-forget"]
-        consumer["Location Consumer<br/>[Component: Kafka consumer]<br/>GEOADD + status write, shared 15 s TTL"]
+        consumer["Location Consumer<br/>[Component: Kafka consumer]<br/>GEOADD + EXPIRE, shared 15 s TTL"]
     end
 
     geo[("Location Index<br/>[Container: Redis Geo; Matching-owned]<br/>drivers:geo:&lt;city&gt; + driver:&lt;id&gt;:status")]
-    surge["Surge Pricing<br/>[Container: gRPC service]<br/>Fare / multiplier"]
 
-    gateway -->|"gRPC: request match (10 ms)"| handler
+    trip -->|"gRPC: find driver (10 ms)"| handler
     handler -->|"1. find nearby"| finder
     finder -->|"GEOSEARCH (15 ms)"| geo
     handler -->|"2. filter / rank (25 ms)"| ranker
     ranker -->|"GET status"| geo
     handler -->|"3. lock driver"| locker
     locker -->|"EVAL Lua (10 ms)"| geo
-    handler -->|"4. confirm fare"| fare
-    fare -->|"gRPC: get price (40 ms)"| surge
-    handler -->|"5. publish"| publisher
-    handler -->|"match result"| gateway
+    handler -->|"4. publish"| publisher
+    handler -->|"driver + ETA"| trip
 
-    publisher -.->|"Publish: trip.events.v1 MatchFound (5 ms, async)"| kafka
+    publisher -.->|"Publish: match.events.v1 MatchFound (5 ms, async)"| kafka
     kafka -.->|"Consume: driver.location.v1"| consumer
-    consumer -->|"GEOADD + SET EX 15"| geo
+    consumer -->|"GEOADD + EXPIRE 15"| geo
 
     classDef service fill:#e8f1fb,stroke:#315c88,color:#17324d,stroke-width:1px;
     classDef component fill:#d4e4f7,stroke:#315c88,color:#17324d,stroke-width:1px;
     classDef store fill:#fff3d6,stroke:#9a772c,color:#4a3916,stroke-width:1px;
-    class gateway,surge service;
-    class handler,finder,ranker,locker,fare,publisher,consumer component;
+    class trip service;
+    class handler,finder,ranker,locker,publisher,consumer component;
     class kafka,geo store;
