@@ -40,7 +40,7 @@ UrbanRide is a ride-hailing backend that must complete **1,000,000 rides per day
 | Latency budget (ride request → driver assigned) | 500 ms |
 | Cost ceiling | 10 LKR/ride ≈ 10M LKR/day (~$33k/day at 300 LKR/USD) |
 
-These figures are **platform-wide totals**. Section 5 sizes every regional cell to the full peak, so its cost model is a deliberate upper bound.
+These figures are **platform-wide totals**. Section 5 sizes each regional cell's baseline to its own share and its *ceiling* to the full platform peak, so any one cell can absorb the whole load and the cost model is a deliberate upper bound.
 
 ### 0.2 Services
 
@@ -360,7 +360,7 @@ The only thing that must be **CP** is the final "this driver is on this trip" re
 
 ## 5. Infrastructure and Cost
 
-UrbanRide runs on AWS as **three self-contained regional cells** (`ap-south-1`, `eu-west-1`, `us-east-1`), each holding a complete copy of the seven services with its own EKS cluster, Kafka cluster, Redis cluster and relational store. Stateless services run on EC2 Spot capacity above a smaller On-Demand floor; everything stateful uses managed services, because self-managing Kafka or Redis on interruptible capacity trades a modest saving for a large operational risk. Every cell is sized to the full platform peak (150,000 drivers, 37,500 pings/s), so the model below is an upper bound. Costs are planning estimates from us-east-1 list prices checked in September 2026 [R4–R14]; they are not quotations.
+UrbanRide runs on AWS as **three self-contained regional cells** (`ap-south-1`, `eu-west-1`, `us-east-1`), each holding a complete copy of the seven services with its own EKS cluster, Kafka cluster, Redis cluster and relational store. Stateless services run on EC2 Spot capacity above a smaller On-Demand floor; everything stateful uses managed services, because self-managing Kafka or Redis on interruptible capacity trades a modest saving for a large operational risk. Every cell's ceiling is sized to the full platform peak (150,000 drivers, 37,500 pings/s), so the model below is an upper bound. Costs are planning estimates from us-east-1 list prices checked in September 2026 [R4]–[R14]; they are not quotations.
 
 Redis is deployed as **Amazon ElastiCache (Valkey engine, Redis-API compatible)** [R27]; the rest of this document calls it Redis.
 
@@ -370,30 +370,46 @@ Redis is deployed as **Amazon ElastiCache (Valkey engine, Redis-API compatible)*
 
 ### 5.1 Region cells and blast radius
 
-A cell owns its drivers and trips outright — a cell-based architecture [R15]. Route 53 latency routing [R16] pins each rider and driver to a home cell, and matching never crosses a cell boundary because a driver 8,000 km away is never a candidate — the partitioning is a property of the domain, not an imposed constraint. Only two things are global, and neither is on the matching path: Identity & Profile reference data replicated through DynamoDB global tables [R26], and the analytics and archive lake in S3 with cross-region replication.
+A cell owns its drivers and trips outright — a cell-based architecture [R15] in which Route 53 latency routing [R16] pins each rider and driver to a home cell.
 
-This is the answer to the network-partition question. A cell severed from the others keeps matching, pricing and trip completion running on local state; it loses only cross-region profile propagation, which is eventually consistent by design. The failure domain is one region's riders, not the platform. Each cell spans three Availability Zones, so an AZ loss is absorbed inside the cell by the managed services' own failover.
+- **Matching never crosses a cell boundary**, because a driver 8,000 km away is never a candidate. The partitioning is a property of the domain, not an imposed constraint.
+- **Only two things are global**, and neither is on the matching path: Identity & Profile reference data replicated through DynamoDB global tables [R26], and the analytics and archive lake in S3 with cross-region replication.
+- **Network-partition answer:** a cell severed from the others keeps matching, pricing and trip completion running on local state, losing only cross-region profile propagation, which is eventually consistent by design (§1.6). The failure domain is one region's riders, not the platform.
+- **Each cell spans three Availability Zones**, so an AZ loss is absorbed inside the cell by the managed services' own failover.
 
 ### 5.2 Compute topology and instance sizing
 
-| Service | Workload character | Instance family | Purchase model | Baseline → peak pods (per cell) |
-|---|---|---|---|---|
-| API Gateway | Connection-heavy, stateless | c7g.2xlarge | On-Demand floor + Spot burst | 4 → 16 |
-| Driver Location Ingestion | Network- and CPU-bound, stateless | c7g.2xlarge | Spot above floor | 6 → 24 |
-| Matching Engine | Latency-critical, cache-bound | c7g.2xlarge | 40% On-Demand floor | 8 → 24 |
-| Trip Management | Transactional, stateless | m7g.2xlarge | On-Demand floor + Spot | 4 → 18 |
-| Surge Pricing | Windowed aggregation | m7g.2xlarge | Spot | 3 → 12 |
-| Billing & Notifications | Asynchronous, deferrable | m7g.2xlarge | Spot | 2 → 10 |
-| Identity & Profile | Read-mostly | c7g.2xlarge | On-Demand | 2 → 6 |
-| Receipts, reconciliation, reports | Low-frequency, bursty | Lambda | Serverless | — |
+AWS encodes a machine's shape in its name. In `c7g.2xlarge`: `c` is compute-optimised, `7` the generation, `g` an AWS Graviton (ARM) processor [R20], `2xlarge` the size — **8 vCPU / 16 GiB**. `m7g.2xlarge` is the general-purpose sibling with the same 8 vCPU but **32 GiB**, used where a service holds more state per in-flight request. Graviton is used throughout for roughly 20% better price/performance on these Go and JVM workloads, which recompile for ARM without effort.
 
-Graviton (ARM) instances [R20] are used throughout for roughly 20% better price/performance on these Go and JVM workloads. Each cluster carries two node groups — an On-Demand baseline and a Spot burst pool — with pod topology spread constraints so that no service is ever entirely on Spot.
+| Service | Workload character | Node type | Purchase model | Baseline → peak pods (per cell) |
+|---|---|---|---|---|
+| API Gateway | Connection-heavy, stateless | c7g.2xlarge (8 vCPU / 16 GiB) | On-Demand floor + Spot burst | 4 → 16 |
+| Driver Location Ingestion | Network- and CPU-bound, stateless | c7g.2xlarge (8 vCPU / 16 GiB) | Spot above floor | 6 → 24 |
+| Matching Engine | Latency-critical, cache-bound | c7g.2xlarge (8 vCPU / 16 GiB) | 40% On-Demand floor | 8 → 24 |
+| Trip Management | Transactional, stateless | m7g.2xlarge (8 vCPU / 32 GiB) | On-Demand floor + Spot | 4 → 18 |
+| Surge Pricing | Windowed aggregation | m7g.2xlarge (8 vCPU / 32 GiB) | Spot | 3 → 12 |
+| Billing & Notifications | Asynchronous, deferrable | m7g.2xlarge (8 vCPU / 32 GiB) | Spot | 2 → 10 |
+| Identity & Profile | Read-mostly | c7g.2xlarge (8 vCPU / 16 GiB) | On-Demand | 2 → 6 |
+| Receipts, reconciliation, reports | Low-frequency, bursty | Lambda | Serverless [R12] | — |
+
+**Where the pod counts come from.** The ride-request rate is small — ~12 req/s average, ~60/s at the 5× peak (§0.1) — which one pod could absorb on its own. Almost the whole fleet is therefore sized by the **GPS stream, not by ride requests**, and that is also why cost per ride lands so far below the ceiling.
+
+- **Driver Location Ingestion** is the heaviest consumer. A cell's steady share is 12,500 pings/s, and one pod on two reserved vCPU sustains ~2,500 pings/s including the WebSocket read and the Kafka produce — five pods carry that, so the baseline is six, giving two per Availability Zone. The **24-pod ceiling provides ~60,000 pings/s**, which is what lets one cell absorb the entire platform peak of 37,500 pings/s if the other two become unreachable.
+- **Matching Engine** is sized off the same stream rather than its own request rate, because every ping updates the Redis geo-index (§4.2). Its ~20 matches/s per cell at peak is negligible beside 75,000 Redis commands/s, which is what fixes the floor at eight pods.
+- **Trip Management, Surge Pricing and Billing & Notifications** are sized for redundancy and event fan-out, not request throughput. Their baselines are AZ-spread floors, and the request-rate trigger in §5.3 is a guard that should rarely fire.
 
 **Serverless is confined to low-frequency paths.** Per-request pricing is excellent at receipt volume (≈10M invocations/month/cell, ≈$60) and poor at 37,500 pings/s, where a long-lived pod holding a WebSocket is roughly two orders of magnitude cheaper than an invocation per ping. The rule: per-request billing for bursty, infrequent work; reserved capacity for sustained streams.
 
-**Spot interruption is a reconnect, not a lost ride.** Capacity-optimised allocation [R18] spreads each pool across at least four instance types and three AZs; the Node Termination Handler [R19] cordons and drains on the two-minute interruption notice [R17]; pods terminate gracefully inside the gRPC deadline propagated per §3.1. Critically, no ride state lives in a pod — trip state is in Aurora, driver positions in Kafka and Redis — so a reclaimed node costs one client reconnection. The On-Demand baseline is covered by one-year Compute Savings Plans [R13]; burst capacity is not committed.
+**Spot interruption is a reconnect, not a lost ride.**
+
+- Capacity-optimised allocation [R18] spreads each pool across at least four instance types and three AZs; two node groups per cluster with pod topology spread constraints mean no service is ever entirely on Spot.
+- The Node Termination Handler [R19] cordons and drains on the two-minute interruption notice [R17]; pods terminate gracefully inside the gRPC deadline propagated per §3.1.
+- **No ride state lives in a pod** — trip state is in Aurora (§2.1), driver positions in Kafka and Redis — so a reclaimed node costs one client reconnection.
+- The On-Demand baseline is covered by one-year Compute Savings Plans [R13]; burst capacity is not committed.
 
 ### 5.3 Auto-scaling triggers
+
+Horizontal Pod Autoscaler on the metrics below, with Cluster Autoscaler provisioning nodes [R21], [R22].
 
 | Component | Metric | Scale out | Scale in | Bounds |
 |---|---|---|---|---|
@@ -404,7 +420,9 @@ Graviton (ARM) instances [R20] are used throughout for roughly 20% better price/
 | Billing & Notifications | Backlog depth | >10,000 events | <1,000 events | 2–10 pods |
 | Node groups | Unschedulable pods | Any pod pending >30 s | Node <50% utilised 10 min | 6–60 nodes |
 
-Two rules govern the table. Scaling is **asymmetric** — fast out, slow in — so a surge arriving in seconds is met immediately while recovery does not flap. The Matching Engine's ceiling is capped at the 48 partitions of `driver.location.v1` (§3.2), beyond which extra consumers sit idle. Because provisioning a node takes two to four minutes — longer than a 5× spike takes to arrive — **scheduled scaling pre-warms capacity for known events** (match fixtures, concert end times, forecast storms) and reactive scaling handles only the unpredictable remainder [R21], [R22].
+- **Scaling is asymmetric** — fast out, slow in — so a surge arriving in seconds is met immediately while recovery does not flap.
+- **The Matching Engine is capped at the 48 partitions** of `driver.location.v1` (§3.2), beyond which extra consumers sit idle.
+- **Known events are pre-warmed on a schedule** — match fixtures, concert end times, forecast storms — because provisioning a node takes two to four minutes, longer than a 5× spike takes to arrive. Reactive scaling handles only the unpredictable remainder.
 
 ### 5.4 Storage tiering
 
@@ -421,7 +439,7 @@ At 37,500 pings/s × ~200 bytes per Kafka message, GPS ingestion is **648 GB/day
 | Cold | Audit and analytics | S3 Glacier Instant Retrieval | 90 days–1 yr | $0.004/GB-mo |
 | Archive | Regulatory retention | S3 Glacier Deep Archive | 1–7 yrs | $0.00099/GB-mo |
 
-Lifecycle policies perform the transitions automatically. Tiering only pays off on aggregated Parquet files, never on per-ping objects, because the cheaper classes carry 128 KB minimum billable object sizes and 30/90/180-day minimum durations [R23], [R24]. At seven-year steady state roughly 200 TB sits in Deep Archive for about $205/month per cell — the same data would cost over $4,700/month in S3 Standard.
+Lifecycle policies perform the transitions automatically [R23], [R24]. Tiering only pays off on aggregated Parquet files, never on per-ping objects, because the cheaper classes carry 128 KB minimum billable object sizes and 30/90/180-day minimum durations [R24]. At seven-year steady state roughly 200 TB sits in Deep Archive for about **$205/month per cell** — the same data would cost over $4,700/month in S3 Standard.
 
 ### 5.5 Cost model
 
@@ -429,38 +447,49 @@ Monthly, per cell, at 730 hours:
 
 | Line | Sizing | Monthly (USD) |
 |---|---|---|
-| EKS control plane | 1 cluster × $0.10/h | $73 |
-| EC2 workers | Avg 20 × c7g/m7g.2xlarge: 6 On-Demand @ $0.29 + 14 Spot @ $0.131 = $3.57/h | $2,609 |
-| Amazon MSK | 6 × kafka.m7g.large @ $0.204/h + 500 GB storage | $944 |
-| ElastiCache (Redis) | 3 shards × 2 nodes × cache.r7g.large @ $0.219/h | $959 |
-| Aurora PostgreSQL | 1 writer + 2 readers × db.r7g.xlarge @ $0.478/h + storage and I/O (Trip Management and Billing databases) | $1,247 |
-| DynamoDB | On-demand, ≈100M write units + reads (Surge Pricing, Identity & Profile) | $200 |
-| S3 and lifecycle | Ingest, tiering, requests | $300 |
-| Lambda | ≈10M invocations | $60 |
+| EKS control plane | 1 cluster × $0.10/h [R6] | $73 |
+| EC2 worker nodes | 20 nodes averaged over the month, 8 vCPU each: 6 On-Demand @ $0.303/h + 14 Spot @ $0.146/h, blended across the 65% c7g / 35% m7g fleet above [R4], [R5], [R14] | $2,822 |
+| Amazon MSK | 6 brokers, kafka.m7g.large (2 vCPU / 8 GiB), @ $0.204/h + 500 GB broker storage [R7] | $944 |
+| ElastiCache (Redis) | 3 shards × 2 nodes, cache.r7g.large (2 vCPU / 13 GiB), @ $0.219/h [R8] | $959 |
+| Aurora PostgreSQL | 1 writer + 2 readers, db.r7g.xlarge (4 vCPU / 32 GiB), @ $0.478/h + storage and I/O (Trip Management and Billing databases) [R9], [R25] | $1,247 |
+| DynamoDB | On-demand, ≈100M write units + reads (Surge Pricing, Identity & Profile) [R10] | $200 |
+| S3 and lifecycle | Ingest, tiering, requests [R11] | $300 |
+| Lambda | ≈10M invocations [R12] | $60 |
 | Load balancers and data transfer | Egress and cross-AZ | $500 |
 | Observability | Metrics, logs, traces | $600 |
-| **Cell total** | | **≈$7,500** |
+| **Cell total** | | **≈$7,700** |
 
 | Roll-up | Monthly (USD) |
 |---|---|
-| 3 region cells | $22,500 |
+| 3 region cells | $23,100 |
 | Global layer — Route 53, CloudFront, cross-region replication, analytics lake, dev and staging | $7,200 |
-| **Platform total** | **≈$29,700** |
+| **Platform total** | **≈$30,300** |
 
 | Cost per completed ride | |
 |---|---|
 | Rides per month | 30,000,000 |
-| Cost per ride | $0.00099 = **0.30 LKR** |
+| Cost per ride | $0.00101 = **0.30 LKR** |
 | Assignment ceiling | 10 LKR |
 | **Headroom** | **97% below ceiling** |
 
 ### 5.6 Sensitivity and scope
 
-**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,234/cell and the platform to ≈$34,600/month — 0.35 LKR per ride, still far inside budget. Spot saves 38% of compute but only 14% of the total bill. At this scale the **managed data tier, not compute, dominates cost**; the largest remaining lever is Redis and Aurora right-sizing, not cheaper instances.
+**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,418/cell and the platform to ≈$35,100/month — 0.35 LKR per ride, still far inside budget. Spot saves 36% of compute but only 14% of the total bill. At this scale the **managed data tier, not compute, dominates cost**; the largest remaining lever is Redis and Aurora right-sizing, not cheaper instances.
 
-**Surge lowers cost per ride.** Auto-scaling means the bill tracks average load, not peak, so a 5× spike sustained three hours a day adds only about 8% to compute, while a sustained rise in demand multiplies completed rides and amortises the fixed managed-service tier over more of them. The per-ride figure is most at risk in the opposite case — prolonged low utilisation, where the fixed floor of roughly $4,000/cell dominates. A fourth cell should be justified by latency or data-residency requirements, never by traffic growth alone.
+**Cost per ride improves with volume, and degrades sharply without it.** Auto-scaling means the bill tracks average load, not peak, so a 5× spike sustained three hours a day adds only about 8% to compute — and because a sustained rise in demand also multiplies completed rides, the fixed managed-service tier amortises over more of them. The risk runs the other way: at single-market volumes the ≈$3,200/cell managed floor dominates.
 
-**Scope.** This figure covers the core backend defined in the brief. It excludes third-party costs that dominate real ride-hailing unit economics — maps and geocoding calls, payment processor fees, SMS and push delivery — which are precisely what the remaining ~9.7 LKR of headroom absorbs.
+| Footprint | Rides/day | Monthly | Cost per ride |
+|---|---|---|---|
+| 1 cell, minimum viable | 20,000 | ≈$4,500 (1.4M LKR) | 2.25 LKR |
+| 1 cell, moderate load | 50,000 | ≈$5,800 (1.7M LKR) | 1.16 LKR |
+| 1 cell, at capacity | 150,000 | ≈$7,700 (2.3M LKR) | 0.51 LKR |
+| **3 cells (this design)** | **1,000,000** | **≈$30,300 (9.1M LKR)** | **0.30 LKR** |
+
+Per-ride cost is five to seven times worse at launch-market scale, so the architecture is cheap **because of** scale, not in spite of it — though the 10 LKR target is still met from day one. A fourth cell should be justified by latency or data-residency requirements, never by traffic growth alone. Single-cell rows scale compute to the stated load and hold the managed tier at its multi-AZ minimum, which is what sets the floor.
+
+**Currency exposure.** AWS bills in USD while launch-market revenue is earned in LKR. At the 300 LKR/USD assumption (§0.1) the platform total is **9.1M LKR/month (≈109M LKR/year)**; a 20% rupee depreciation to 360 raises it to **10.9M LKR/month with no change in usage at all** — a larger swing than the entire Spot saving. The mitigations are commercial rather than architectural: Savings Plans fix the USD rate for the committed baseline, and fare or commission structures should track the exchange rate.
+
+**Scope.** This figure covers the core backend defined in the brief. It excludes third-party costs that dominate real ride-hailing unit economics — maps and geocoding calls (§1.1), payment processor fees, SMS and push delivery — which are precisely what the remaining ~9.7 LKR of headroom absorbs. Against a typical 400 LKR urban fare, the 10 LKR ceiling is 2.5% of the fare and 0.30 LKR is 0.075%, or about **0.38% of platform commission** at a 20% take rate. The infrastructure target is met with a wide margin; the commercial risk sits outside this boundary.
 
 ---
 
