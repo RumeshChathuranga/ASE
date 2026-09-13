@@ -15,18 +15,24 @@ This is the answer to the network-partition question. A cell severed from the ot
 
 ## 5.2 Compute topology and instance sizing
 
-| Service | Workload character | Instance family | Purchase model | Baseline → peak pods (per cell) |
-|---|---|---|---|---|
-| API Gateway | Connection-heavy, stateless | c7g.2xlarge | On-Demand floor + Spot burst | 4 → 16 |
-| Driver Location Ingestion | Network and CPU bound, stateless | c7g.2xlarge | Spot above floor | 6 → 24 |
-| Matching Engine | Latency-critical, cache-bound | c7g.2xlarge | 40% On-Demand floor | 8 → 24 |
-| Trip Management | Transactional, stateless | m7g.2xlarge | On-Demand floor + Spot | 4 → 18 |
-| Surge Pricing | Windowed aggregation | m7g.2xlarge | Spot | 3 → 12 |
-| Billing & Notifications | Asynchronous, deferrable | m7g.2xlarge | Spot | 2 → 10 |
-| Identity & Profile | Read-mostly | c7g.2xlarge | On-Demand | 2 → 6 |
-| Receipts, reconciliation, reports | Low-frequency, bursty | Lambda | Serverless | — |
+AWS encodes a machine's shape in its name, so it is worth decoding the two used here before the table. In `c7g.2xlarge`, the `c` means compute-optimised, `7` is the hardware generation, `g` means an AWS [Graviton](https://aws.amazon.com/ec2/graviton/) processor (ARM, the same architecture as a phone chip), and `2xlarge` is the size — **8 vCPU and 16 GiB of memory**. `m7g.2xlarge` is the general-purpose sibling: the same 8 vCPU but **32 GiB**, used where a service holds more state per in-flight request. Graviton is chosen throughout because it delivers roughly 20% better price/performance than the equivalent x86 instance, and our services are Go and JVM workloads that recompile for ARM without effort.
 
-[Graviton](https://aws.amazon.com/ec2/graviton/) (ARM) instances are chosen throughout for roughly 20% better price/performance on these Go and JVM workloads. Each cluster carries two node groups — an On-Demand baseline and a Spot burst pool — with pod topology spread constraints so that no service is ever entirely on Spot.
+| Service | Workload character | Node type | Purchase model | Baseline → peak pods (per cell) |
+|---|---|---|---|---|
+| API Gateway | Connection-heavy, stateless | c7g.2xlarge (8 vCPU / 16 GiB) | On-Demand floor + Spot burst | 4 → 16 |
+| Driver Location Ingestion | Network and CPU bound, stateless | c7g.2xlarge (8 vCPU / 16 GiB) | Spot above floor | 6 → 24 |
+| Matching Engine | Latency-critical, cache-bound | c7g.2xlarge (8 vCPU / 16 GiB) | 40% On-Demand floor | 8 → 24 |
+| Trip Management | Transactional, stateless | m7g.2xlarge (8 vCPU / 32 GiB) | On-Demand floor + Spot | 4 → 18 |
+| Surge Pricing | Windowed aggregation | m7g.2xlarge (8 vCPU / 32 GiB) | Spot | 3 → 12 |
+| Billing & Notifications | Asynchronous, deferrable | m7g.2xlarge (8 vCPU / 32 GiB) | Spot | 2 → 10 |
+| Identity & Profile | Read-mostly | c7g.2xlarge (8 vCPU / 16 GiB) | On-Demand | 2 → 6 |
+| Receipts, reconciliation, reports | Low-frequency, bursty | Lambda (serverless) | Per-request | — |
+
+**Where these pod counts come from.** The ride-request rate is genuinely small: 1,000,000 rides/day is about 12 requests/s on average and 60/s at the 5x peak, which one pod could absorb on its own. Almost the whole fleet is therefore sized by the **GPS stream, not by ride requests** — worth stating plainly, because it is also the reason the cost per ride in §5.5 lands so far below the ceiling.
+
+Driver Location Ingestion is the heaviest consumer. 37,500 pings/s spread over three cells is 12,500/s per cell, and one pod on two reserved vCPU sustains roughly 2,500 pings/s once the WebSocket read and the Kafka produce are counted — five pods would carry the average, so the baseline is six, giving two per Availability Zone. The peak of 24 covers a 5x increase in reporting drivers. Matching Engine is sized off the same stream rather than its own request rate, because every ping has to update the geospatial index; the 20 matches/s per cell at peak is negligible beside that, which is what fixes its floor at eight pods. Trip Management, Surge Pricing and Billing & Notifications are sized for redundancy and event fan-out instead of request throughput — their baselines are AZ-spread floors, and the request-rate trigger in §5.3 is a guard that should rarely fire in normal operation.
+
+Each cluster carries two node groups — an On-Demand baseline and a Spot burst pool — with pod topology spread constraints so that no service ever runs entirely on Spot.
 
 **Serverless is deliberately confined to low-frequency paths.** Per-request pricing is excellent at receipt volume (≈10M invocations/month/cell, ≈$60) and poor at 37,500 pings/s, where a long-lived pod holding a WebSocket is roughly two orders of magnitude cheaper than an invocation per ping. The rule is per-request billing for bursty, infrequent work; reserved capacity for sustained streams.
 
@@ -68,35 +74,35 @@ Monthly, per cell, at 730 hours:
 | Line | Sizing | Monthly (USD) |
 |---|---|---|
 | EKS control plane | 1 cluster × $0.10/h | $73 |
-| EC2 workers | Avg 20 × c7g/m7g.2xlarge: 6 On-Demand @ $0.29 + 14 Spot @ $0.131 = $3.57/h | $2,609 |
-| Amazon MSK | 6 × kafka.m7g.large @ $0.204/h + 500 GB storage | $944 |
-| ElastiCache Valkey | 3 shards × 2 nodes × cache.r7g.large @ $0.219/h | $959 |
-| Aurora PostgreSQL | 1 writer + 2 readers × db.r7g.xlarge @ $0.478/h + storage and I/O | $1,247 |
+| EC2 worker nodes | 20 nodes averaged over the month, 8 vCPU each: 6 On-Demand at $0.303/h + 14 Spot at $0.146/h. Rates are blended across the 65% c7g / 35% m7g fleet implied by the pod counts above | $2,822 |
+| Amazon MSK | 6 brokers, kafka.m7g.large (2 vCPU / 8 GiB), at $0.204/h + 500 GB broker storage | $944 |
+| ElastiCache Valkey | 3 shards × 2 nodes, cache.r7g.large (2 vCPU / 13 GiB), at $0.219/h | $959 |
+| Aurora PostgreSQL | 1 writer + 2 readers, db.r7g.xlarge (4 vCPU / 32 GiB), at $0.478/h + storage and I/O | $1,247 |
 | DynamoDB | On-demand, ≈100M write units + reads | $200 |
 | S3 and lifecycle | Ingest, tiering, requests | $300 |
 | Lambda | ≈10M invocations | $60 |
 | Load balancers and data transfer | Egress and cross-AZ | $500 |
 | Observability | Metrics, logs, traces | $600 |
-| **Cell total** | | **≈$7,500** |
+| **Cell total** | | **≈$7,700** |
 
 | Roll-up | Monthly (USD) |
 |---|---|
-| 3 region cells | $22,500 |
+| 3 region cells | $23,100 |
 | Global layer — Route 53, CloudFront, cross-region replication, analytics lake, dev and staging | $7,200 |
-| **Platform total** | **≈$29,700** |
+| **Platform total** | **≈$30,300** |
 
 | Cost per completed ride | |
 |---|---|
 | Rides per month | 30,000,000 |
-| Cost per ride | $0.00099 = **0.30 LKR** |
+| Cost per ride | $0.00101 = **0.30 LKR** |
 | Assignment ceiling | 10 LKR |
 | **Headroom** | **97% below ceiling** |
 
 ## 5.6 Sensitivity and scope
 
-**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,234/cell and the platform to ≈$34,600/month — 0.35 LKR per ride, still far inside budget. Spot saves 38% of compute but only 14% of the total bill. The honest conclusion is that at this scale the **managed data tier, not compute, dominates cost**; the largest remaining lever is Valkey and Aurora right-sizing, not chasing cheaper instances.
+**Spot is worth less than it looks.** At 100% On-Demand, EC2 rises to $4,418/cell and the platform to ≈$35,100/month — 0.35 LKR per ride, still far inside budget. Spot saves 36% of compute but only 14% of the total bill. The honest conclusion is that at this scale the **managed data tier, not compute, dominates cost**; the largest remaining lever is Valkey and Aurora right-sizing, not chasing cheaper instances.
 
-**Surge lowers cost per ride.** Auto-scaling means the monthly bill tracks average load, not peak, so a 5x spike sustained three hours a day adds only about 8% to compute. A sustained increase in demand also multiplies completed rides, so the fixed managed-service tier is amortised over more of them. The per-ride figure is most at risk in the opposite case — prolonged low utilisation, where the fixed floor of roughly $4,000/cell dominates. A fourth cell should therefore be justified by latency or data-residency requirements, never by traffic growth alone.
+**Surge lowers cost per ride.** Auto-scaling means the monthly bill tracks average load, not peak, so a 5x spike sustained three hours a day adds only about 8% to compute. A sustained increase in demand also multiplies completed rides, so the fixed managed-service tier is amortised over more of them. The per-ride figure is most at risk in the opposite case — prolonged low utilisation, where the fixed floor of roughly $3,200/cell in managed services dominates. A fourth cell should therefore be justified by latency or data-residency requirements, never by traffic growth alone.
 
 **Scope.** This figure covers the core backend defined in the brief. It excludes third-party costs that dominate real ride-hailing unit economics — maps and geocoding API calls, payment processor fees, SMS and push delivery — which are precisely what the remaining ~9.7 LKR of headroom absorbs. The infrastructure target is met with a wide margin; the commercial risk sits outside this boundary.
 
