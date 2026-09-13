@@ -1,0 +1,20 @@
+%% UrbanRide — System Context (C4 Level 1) — Black & White
+flowchart LR
+    Rider["<b>Rider</b><br/><i>Person</i>"]:::person
+    Driver["<b>Driver</b><br/><i>Person</i>"]:::person
+
+    System["<b>UrbanRide Platform</b><br/><i>Software System</i><br/>Matches riders with drivers,<br/>prices rides, bills and notifies<br/>1M completed rides/day"]:::system
+
+    Payment["<b>Payment Gateway</b><br/><i>External System</i>"]:::external
+    Maps["<b>Maps / Routing Provider</b><br/><i>External System</i>"]:::external
+    Notify["<b>SMS / Push Notification Provider</b><br/><i>External System</i>"]:::external
+
+    Rider -->|"Requests ride, pays, rates<br/><i>sync / HTTPS</i>"| System
+    Driver -->|"Sends GPS pings, accepts match<br/><i>sync + async</i>"| System
+    System -->|"Captures payment<br/><i>sync / HTTPS</i>"| Payment
+    System -->|"Requests ETA / route<br/><i>sync / HTTPS</i>"| Maps
+    System -.->|"Sends notifications<br/><i>async</i>"| Notify
+
+    classDef person fill:#ffffff,color:#000000,stroke:#000000,stroke-width:1.5px
+    classDef system fill:#ffffff,color:#000000,stroke:#000000,stroke-width:2px
+    classDef external fill:#ffffff,color:#000000,stroke:#000000,stroke-width:1.5px,stroke-dasharray: 2 2
