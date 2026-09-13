@@ -133,12 +133,12 @@ The two decisions the panel will probe hardest: Driver Location Ingestion → AP
 ### 1.9 Diagram Deliverable
 
 **C4 Level 1 — System Context**
-Source: `diagrams/src/context-diagram.mmd` · Export: `diagrams/export/context-diagram.svg`
+Source: `diagrams/src/01-context-decomposition.mmd` · Export: `diagrams/export/01-context-decomposition.png`
 
 Must show: Rider, Driver, UrbanRide, Payment Gateway, Maps/Routing Provider, SMS/Push Notification Provider.
 Must NOT show: any of the 7 internal services, internal databases, Kafka topics, Redis, or API details — those belong to Level 2/3.
 
-![UrbanRide System Context Diagram](../diagrams/export/context-diagram-bw.png)
+![UrbanRide System Context Diagram](../diagrams/export/01-context-decomposition.png)
 
 ### 1.10 Summary
 
