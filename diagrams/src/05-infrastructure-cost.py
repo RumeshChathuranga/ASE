@@ -37,7 +37,7 @@ EDGE = {"fontsize": "13", "fontname": "Helvetica", "color": "#4A4A4A"}
 ASYNC = Edge(style="dashed", color="#EF6C00")
 
 with Diagram(
-    "UrbanRide — Deployment and Cost Topology  ·  3 region cells  ·  ~$42,700/month  ·  1.37 LKR per ride",
+    "UrbanRide — Deployment and Cost Topology  ·  3 region cells  ·  ~$112,400/month AWS  ·  5.89 LKR per ride all-in",
     filename="diagrams/export/05-infrastructure-cost",
     outformat="png",
     show=False,
@@ -50,45 +50,45 @@ with Diagram(
     users = Users("Riders and drivers")
     dns = Route53("Route 53\nlatency routing")
 
-    with Cluster("Region cell — eu-west-1 · 3 Availability Zones · ≈$11,200/month",
+    with Cluster("Region cell — eu-west-1 · 3 Availability Zones · ≈$26,500/month",
                  graph_attr={"margin": "26", "bgcolor": "#FFFDF5", "fontsize": "19", "pencolor": "#B0A268"}):
 
         with Cluster("Edge", graph_attr={"margin": "26", "bgcolor": "#F5F5F5", "fontsize": "15"}):
             alb = ElbApplicationLoadBalancer("ALB\nHTTPS / REST")
             nlb = ElbNetworkLoadBalancer("NLB\nWSS — GPS pings")
 
-        with Cluster("Amazon EKS  ·  auto-scales 6 → 60 nodes  ·  $2,822/mo",
+        with Cluster("Amazon EKS  ·  22 → 67 nodes  ·  $6,401/mo",
                      graph_attr={"margin": "26", "bgcolor": "#FBFBFB", "fontsize": "17"}):
 
             with Cluster("On-Demand baseline · Savings Plan\n"
                          "API Gateway · Matching Engine · Identity & Profile",
                          graph_attr={"margin": "26", "bgcolor": "#E3F2FD", "fontsize": "15", "pencolor": "#1565C0"}):
-                ondemand = EC2Instances("6 nodes · 8 vCPU each\n$0.303/h blended")
+                ondemand = EC2Instances("14 nodes · 8 vCPU each\n$0.303/h On-Demand")
 
             with Cluster("Spot burst pool · 52% cheaper\n"
                          "Location Ingestion · Trip Management · Surge Pricing · Billing",
                          graph_attr={"margin": "26", "bgcolor": "#FFF3E0", "fontsize": "15", "pencolor": "#EF6C00"}):
-                spot = EC2SpotInstance("14 nodes · 8 vCPU each\n$0.146/h blended")
+                spot = EC2SpotInstance("31 nodes · 8 vCPU each\n$0.146/h Spot")
 
-        with Cluster("Managed data tier — multi-AZ  ·  $3,671/mo incl. MSK Connect",
+        with Cluster("Managed data tier — multi-AZ  ·  $7,220/mo",
                      graph_attr={"margin": "26", "bgcolor": "#E8F5E9", "fontsize": "17", "pencolor": "#2E7D32"}):
 
             with Cluster("Stream and geo cache",
                          graph_attr={"margin": "26", "bgcolor": "#DCEFDD", "fontsize": "14"}):
-                msk = ManagedStreamingForKafka("Amazon MSK + Connect\n6 brokers + Debezium CDC\n$1,265/mo")
-                cache = ElastiCache("ElastiCache Valkey\n3 shards × 2\n$959/mo")
+                msk = ManagedStreamingForKafka("Amazon MSK + Connect\n6 x m7g.xlarge + Debezium\n$2,208/mo")
+                cache = ElastiCache("ElastiCache Valkey\n3 shards × 2 r7g.xlarge\n$1,918/mo")
 
             with Cluster("Systems of record",
                          graph_attr={"margin": "26", "bgcolor": "#DCEFDD", "fontsize": "14"}):
-                aurora = Aurora("Aurora PostgreSQL\nwriter + 2 readers\n$1,247/mo")
-                ddb = Dynamodb("DynamoDB\ndriver / trip state\n$200/mo")
+                aurora = Aurora("Aurora PostgreSQL\nwriter + 2 readers\n$2,494/mo")
+                ddb = Dynamodb("DynamoDB\ndriver / trip state\n$600/mo")
 
         with Cluster("Low-frequency and object storage",
                      graph_attr={"margin": "26", "bgcolor": "#F3F7F3", "fontsize": "15"}):
             lam = Lambda("Lambda\nreceipts, reconciliation\n$60/mo")
-            s3 = S3("S3 — Parquet\n81 GB/day\n$300/mo")
+            s3 = S3("S3 — Parquet\n81 GB/day\n$600/mo")
 
-    peers = General("2 further cells\nap-south-1 · us-east-1\nidentical, ~$11,200/mo each")
+    peers = General("2 further cells\nap-south-1 · us-east-1\nidentical, ~$26,500/mo each")
 
     with Cluster("Global layer — asynchronous only, never on the matching path",
                  graph_attr={"margin": "26", "bgcolor": "#EDE7F6", "fontsize": "17", "pencolor": "#5E35B1"}):
